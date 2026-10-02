@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Inkwell">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<script>/* home-screen app? reserve room for the status bar (see --top in styles.css) */
+if (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches) document.documentElement.classList.add('standalone');</script>
+<link rel="stylesheet" href="styles.css">
+<title>Inkwell</title>
+</head>
+<body>
+<div id="topBand" aria-hidden="true"></div>
+<div id="app">
+  <!-- ============ LIBRARY ============ -->
+  <section id="library" class="view">
+    <aside id="sidebar">
+      <div class="brand"><img src="icon-192.png" alt=""><span>Inkwell</span></div>
+      <nav id="folderNav"></nav>
+      <button id="newFolderBtn" class="side-add" data-icon="folderPlus"><span>New Folder</span></button>
+      <div class="side-foot" id="storageInfo"></div>
+    </aside>
+    <main id="libMain">
+      <header class="lib-head">
+        <div class="lib-title">
+          <button id="navBtn" class="icon-btn" data-icon="folder" aria-label="Folders"></button>
+          <span id="sectionIcon" class="sec-ic"></span>
+          <div><h1 id="sectionTitle">Notes</h1><div id="sectionSub" class="sub"></div></div>
+          <button id="folderMenuBtn" class="icon-btn" data-icon="more" aria-label="Folder options" hidden></button>
+        </div>
+        <div class="lib-actions">
+          <button id="importPdfBtn" class="btn secondary" data-icon="fileUp"><span>Import PDF</span></button>
+          <button id="newNoteBtn" class="btn primary" data-icon="plus"><span>New Note</span></button>
+          <button id="settingsBtn" class="icon-btn" data-icon="settings" aria-label="Settings"></button>
+        </div>
+      </header>
+      <div id="libBody"></div>
+    </main>
+  </section>
+
+  <!-- ============ EDITOR ============ -->
+  <section id="editor" class="view hidden">
+    <div id="docScroll"><div id="pagesWrap"></div></div>
+    <div class="float tl pillbar">
+      <button id="backBtn" class="icon-btn" data-icon="back" aria-label="Back to library"></button>
+      <span id="lockBadge" title="Encrypted folder"></span>
+    </div>
+    <div class="float tc pillbar col" id="toolPill">
+      <div class="pill-row">
+        <div class="seg" id="toolSeg">
+          <button data-tool="pen" data-icon="pen" aria-label="Pen"></button>
+          <button data-tool="hl" data-icon="hl" aria-label="Highlighter"></button>
+          <button data-tool="eraser" data-icon="eraser" aria-label="Eraser"></button>
+        </div>
+        <span class="sep"></span>
+        <button id="paperBtn" class="icon-btn" data-icon="paper" aria-label="Page style"></button>
+        <button id="addPageBtn" class="icon-btn" data-icon="addPage" aria-label="Add page"></button>
+        <button id="pagesBtn" class="icon-btn" data-icon="pages" aria-label="Pages"></button>
+        <button id="fingerBtn" class="icon-btn toggle" data-icon="hand" aria-label="Draw with finger"></button>
+      </div>
+      <div class="pill-row">
+        <div id="swatches" class="swatches"></div>
+        <span class="sep"></span>
+        <div id="sizes" class="sizes"></div>
+      </div>
+    </div>
+    <div class="float tr pillbar" id="actionPill">
+      <button id="undoBtn" class="icon-btn" data-icon="undo" aria-label="Undo" disabled></button>
+      <button id="redoBtn" class="icon-btn" data-icon="redo" aria-label="Redo" disabled></button>
+      <button id="shareBtn" class="icon-btn" data-icon="share" aria-label="Export as PDF"></button>
+      <button id="edMoreBtn" class="icon-btn" data-icon="more" aria-label="More"></button>
+    </div>
+    <aside id="thumbs" class="thumbs pillbar hidden"></aside>
+    <button id="zoomBtn" class="zoom-pill pillbar hidden" aria-label="Reset zoom">100%</button>
+    <div id="pageIndicator" class="page-ind">1 / 1</div>
+  </section>
+</div>
+<div id="modalRoot"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="privacyCover"><img src="icon-192.png" alt=""></div>
+<input type="file" id="pdfInput" class="file-input" accept="application/pdf,.pdf" multiple tabindex="-1" aria-hidden="true">
+<input type="file" id="backupInput" class="file-input" tabindex="-1" aria-hidden="true">
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
