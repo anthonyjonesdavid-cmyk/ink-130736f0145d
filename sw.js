@@ -1,6 +1,6 @@
 // Offline support: precache the whole app shell (incl. vendored pdf.js / pdf-lib / fonts).
 // deploy.sh stamps VERSION with a content hash so every deploy refreshes the cache.
-const VERSION = 'inkwell-zoom-btn-1';
+const VERSION = 'inkwell-dark-ui-1';
 const ASSETS = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
