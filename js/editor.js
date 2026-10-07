@@ -351,6 +351,7 @@ export class Editor {
     const stylus = [...e.changedTouches].some((t) => t.touchType === 'stylus');
     if (stylus) { e.preventDefault(); return; } // Pencil never scrolls, never selects text
     if (this.cur && this.cur.pointerType === 'pen') { e.preventDefault(); return; } // palm while writing
+    if (!this.settings.pinchZoom) return; // pinch zoom off by default — fingers only scroll
     const f = this.fingers(e.touches);
     if (f.length >= 2) {
       e.preventDefault();
@@ -453,6 +454,7 @@ export class Editor {
   }
 
   onWheel(e) {
+    if (!this.settings.pinchZoom) return; // gesture zoom off unless the user turns it on
     if (!e.ctrlKey && !e.metaKey) return; // trackpad pinch / ctrl+wheel
     e.preventDefault();
     this.setZoom(this.zoom * Math.exp(-e.deltaY / 200), null, e.clientX, e.clientY);
