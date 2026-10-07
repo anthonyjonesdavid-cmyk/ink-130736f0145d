@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Inkwell">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -81,6 +81,7 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
       </div>
     </div>
     <div class="float tr pillbar" id="actionPill">
+      <button id="zoomAdjustBtn" class="icon-btn" data-icon="zoom" aria-label="Zoom"></button>
       <button id="undoBtn" class="icon-btn" data-icon="undo" aria-label="Undo" disabled></button>
       <button id="redoBtn" class="icon-btn" data-icon="redo" aria-label="Redo" disabled></button>
       <button id="shareBtn" class="icon-btn" data-icon="share" aria-label="Export as PDF"></button>
