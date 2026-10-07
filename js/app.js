@@ -12,7 +12,7 @@ import {
 
 /* ---------------- settings ---------------- */
 const DEFAULTS = {
-  fingerDraw: false, tool: 'pen',
+  fingerDraw: false, pinchZoom: false, tool: 'pen',
   pen: { color: '#1c1c1e', size: 2.6 }, hl: { color: '#ffe24a', size: 16 }, eraser: { size: 24 },
   paper: { style: 'ruled', color: '#ffffff' },
   penTheme: { light: '#1c1c1e', dark: '#ffffff' },
@@ -786,11 +786,47 @@ $('#sizes').addEventListener('click', (e) => {
 });
 $('#fingerBtn').addEventListener('click', () => {
   settings.fingerDraw = !settings.fingerDraw; saveSettings(); updateToolbar();
-  toast(settings.fingerDraw ? 'Finger drawing on — use two fingers to scroll & zoom' : 'Pencil only — fingers scroll & zoom');
+  toast(settings.fingerDraw ? 'Finger drawing on — two fingers scroll' + (settings.pinchZoom ? ' and zoom' : '') : 'Pencil only — fingers scroll' + (settings.pinchZoom ? ' and pinch-zoom' : ''));
 });
 $('#undoBtn').addEventListener('click', () => editor.undo());
 $('#redoBtn').addEventListener('click', () => editor.redo());
 $('#zoomBtn').addEventListener('click', () => editor.resetZoom());
+
+const ZOOM_STOPS = [0.75, 1, 1.25, 1.5, 2];
+function applyZoom(z) {
+  editor.setZoom(z);
+  const read = document.getElementById('zoomReadout');
+  if (read) read.textContent = Math.round(editor.zoom * 100) + '%';
+  document.querySelectorAll('.zoom-stop').forEach((b) => b.classList.toggle('on', Math.abs(parseFloat(b.dataset.z) - editor.zoom) < 0.011));
+}
+$('#zoomAdjustBtn').addEventListener('click', (e) => {
+  const pop = h(`<div class="zoom-pop">
+    <div class="pop-title">Zoom</div>
+    <div class="zoom-row">
+      <button type="button" class="btn secondary" id="zoomOut" aria-label="Zoom out">−</button>
+      <span id="zoomReadout">${Math.round(editor.zoom * 100)}%</span>
+      <button type="button" class="btn secondary" id="zoomIn" aria-label="Zoom in">+</button>
+    </div>
+    <div class="zoom-stops">
+      ${ZOOM_STOPS.map((z) => `<button type="button" class="zoom-stop ${Math.abs(z - editor.zoom) < 0.011 ? 'on' : ''}" data-z="${z}">${Math.round(z * 100)}%</button>`).join('')}
+    </div>
+    <label class="switch-row"><span>Pinch to zoom<small>Off by default so writing doesn’t zoom the page. Use this button instead.</small></span><input type="checkbox" id="pinchZoomToggle" ${settings.pinchZoom ? 'checked' : ''}><span class="switch"></span></label>
+  </div>`);
+  const opened = popover(e.currentTarget, pop, { align: 'end', width: 280 });
+  $('#zoomOut', opened).addEventListener('click', (ev) => { ev.stopPropagation(); applyZoom(Math.round((editor.zoom - 0.25) * 100) / 100); });
+  $('#zoomIn', opened).addEventListener('click', (ev) => { ev.stopPropagation(); applyZoom(Math.round((editor.zoom + 0.25) * 100) / 100); });
+  opened.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.zoom-stop');
+    if (!b) return;
+    ev.stopPropagation();
+    applyZoom(parseFloat(b.dataset.z));
+  });
+  $('#pinchZoomToggle', opened).addEventListener('change', (ev) => {
+    settings.pinchZoom = ev.target.checked;
+    saveSettings();
+    toast(settings.pinchZoom ? 'Pinch zoom on' : 'Pinch zoom off — page stays at the zoom you set');
+  });
+});
 $('#addPageBtn').addEventListener('click', () => { editor.addPage(); refreshThumbs(); toast('Page added'); });
 async function renameCurrent() {
   const t = await promptText('Rename note', current.meta.title);
@@ -973,7 +1009,8 @@ async function openSettings() {
   const s = await storageStatus();
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const body = h(`<div class="settings">
-    <label class="switch-row"><span>${icon('hand')} Draw with finger<small>Off: only Apple Pencil draws; fingers scroll and pinch-zoom.</small></span><input type="checkbox" id="sFinger" ${settings.fingerDraw ? 'checked' : ''}><span class="switch"></span></label>
+    <label class="switch-row"><span>${icon('hand')} Draw with finger<small>Off: only Apple Pencil draws; fingers scroll.</small></span><input type="checkbox" id="sFinger" ${settings.fingerDraw ? 'checked' : ''}><span class="switch"></span></label>
+    <label class="switch-row"><span>${icon('zoom')} Pinch to zoom<small>Off by default so a resting hand doesn’t zoom the page. Use the zoom button to change size.</small></span><input type="checkbox" id="sPinch" ${settings.pinchZoom ? 'checked' : ''}><span class="switch"></span></label>
     <div class="set-group">
       <div class="set-title">Storage</div>
       <p>Notes are stored only on this device (IndexedDB). <b>${s.persisted ? 'Persistent storage is granted.' : 'Persistent storage not granted yet.'}</b> ${mb(s.usage)} used.</p>
@@ -988,6 +1025,7 @@ async function openSettings() {
     <p class="fine">Inkwell works offline. Nothing is uploaded anywhere.</p>
   </div>`);
   $('#sFinger', body).addEventListener('change', (e) => { settings.fingerDraw = e.target.checked; saveSettings(); updateToolbar(); });
+  $('#sPinch', body).addEventListener('change', (e) => { settings.pinchZoom = e.target.checked; saveSettings(); toast(settings.pinchZoom ? 'Pinch zoom on' : 'Pinch zoom off'); });
   $('#sPersist', body).addEventListener('click', async () => {
     persistAsked = false;
     const ok = await requestPersist();
