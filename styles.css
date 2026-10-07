@@ -36,7 +36,7 @@ button:disabled { opacity: .35; cursor: default; }
 .ic { width: 22px; height: 22px; flex: none; }
 #app { position: absolute; inset: 0; top: var(--top); } /* all views, pills and the page scroller start below the reserve */
 #library { background: var(--bg); }
-/* fully opaque black band over the status-bar area, above everything; nothing scrolls under it */
+/* fully opaque white band over the status-bar area, above everything; nothing scrolls under it */
 #topBand { position: fixed; left: 0; right: 0; top: 0; height: var(--top); background: #000000; z-index: 2147483000; pointer-events: none; }
 .view { position: absolute; inset: 0; display: flex; }
 
@@ -451,3 +451,12 @@ body.privacy #privacyCover { display: grid; }
 /* every dialog stays clear of the status bar (Home Screen app on notched iPhones too) */
 .modal-back { padding-top: max(24px, calc(var(--top) + 12px)); padding-bottom: max(24px, calc(var(--sab) + 12px)); }
 .modal { max-height: min(88vh, 100%); }
+
+.zoom-pop { padding: 8px 8px 4px; }
+.zoom-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.zoom-row .btn { min-width: 52px; color: var(--ink); }
+#zoomReadout { font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: center; }
+.zoom-stops { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.zoom-stop { height: 34px; padding: 0 10px; border-radius: 10px; background: #f2f2f5; font-weight: 650; font-size: 13px; }
+.zoom-stop.on { background: var(--accent); color: #fff; }
+.zoom-pop .switch-row { margin-top: 4px; }
