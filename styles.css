@@ -36,8 +36,8 @@ button:disabled { opacity: .35; cursor: default; }
 .ic { width: 22px; height: 22px; flex: none; }
 #app { position: absolute; inset: 0; top: var(--top); } /* all views, pills and the page scroller start below the reserve */
 #library { background: var(--bg); }
-/* fully opaque white band over the status-bar area, above everything; nothing scrolls under it */
-#topBand { position: fixed; left: 0; right: 0; top: 0; height: var(--top); background: #ffffff; z-index: 2147483000; pointer-events: none; }
+/* fully opaque black band over the status-bar area, above everything; nothing scrolls under it */
+#topBand { position: fixed; left: 0; right: 0; top: 0; height: var(--top); background: #000000; z-index: 2147483000; pointer-events: none; }
 .view { position: absolute; inset: 0; display: flex; }
 
 /* ---------- buttons ---------- */
@@ -86,11 +86,14 @@ button:disabled { opacity: .35; cursor: default; }
 #navBtn { display: none; }
 
 #libMain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.lib-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px calc(var(--sar) + 22px) 14px 28px; }
+.lib-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px calc(var(--sar) + 22px) 14px 28px; background: #000000; color: #ffffff; }
 .lib-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .lib-title h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sec-ic { width: 44px; height: 44px; border-radius: 12px; background: #fff; box-shadow: var(--shadow); display: grid; place-items: center; color: var(--accent); flex: none; }
 .sub { color: var(--ink2); font-size: 14px; margin-top: 2px; }
+.lib-head .sub { color: rgba(255,255,255,.62); }
+.lib-head .icon-btn { color: #ffffff; }
+.lib-head h1 { color: #ffffff; }
 .lib-actions { display: flex; gap: 10px; align-items: center; flex: none; }
 #libBody { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px calc(var(--sar) + 22px) calc(var(--sab) + 30px) 28px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 26px 22px; }
