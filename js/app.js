@@ -16,11 +16,12 @@ const DEFAULTS = {
   pen: { color: '#1c1c1e', size: 2.6 }, hl: { color: '#ffe24a', size: 16 }, eraser: { size: 24 },
   paper: { style: 'ruled', color: '#ffffff' },
   penTheme: { light: '#1c1c1e', dark: '#ffffff' },
+  penColors: ['#1c1c1e', '#2f5bea', '#e0352b', '#16a05d', '#8a3ffc', '#f28c0f', '#ffffff'],
 };
 const SETTINGS_KEY = 'inkwell.settings';
 const PEN_SIZE_MIGRATION_KEY = 'inkwell.pen-size-default-v2';
 function mergeSettings(s = {}) {
-  return { ...DEFAULTS, ...s, pen: { ...DEFAULTS.pen, ...s.pen }, hl: { ...DEFAULTS.hl, ...s.hl }, eraser: { ...DEFAULTS.eraser, ...s.eraser }, paper: { ...DEFAULTS.paper, ...s.paper }, penTheme: { ...DEFAULTS.penTheme, ...s.penTheme } };
+  return { ...DEFAULTS, ...s, pen: { ...DEFAULTS.pen, ...s.pen }, hl: { ...DEFAULTS.hl, ...s.hl }, eraser: { ...DEFAULTS.eraser, ...s.eraser }, paper: { ...DEFAULTS.paper, ...s.paper }, penTheme: { ...DEFAULTS.penTheme, ...s.penTheme }, penColors: Array.isArray(s.penColors) && s.penColors.length ? s.penColors.slice(0, 10) : DEFAULTS.penColors };
 }
 const settings = (() => {
   let saved = null;
@@ -744,11 +745,12 @@ function updateToolbar() {
   if (t === 'eraser') {
     sw.innerHTML = '<span class="tool-note">Stroke eraser — touch a stroke to remove it</span>';
   } else {
-    const colors = t === 'hl' ? HL_COLORS : PEN_COLORS;
+    const colors = t === 'hl' ? HL_COLORS : (settings.penColors || PEN_COLORS);
     const cur = settings[t].color;
     const custom = !colors.includes(cur);
-    sw.innerHTML = colors.map((c) => `<button class="swatch ${t === 'hl' ? 'hl' : ''} ${c === cur ? 'on' : ''}" data-color="${c}" style="--c:${c}" aria-label="Colour ${c}"></button>`).join('')
-      + `<label class="swatch custom ${custom ? 'on' : ''}" style="--c:${custom ? cur : 'transparent'}" aria-label="Custom colour"><input type="color" value="${cur}"></label>`;
+    sw.innerHTML = colors.map((c, i) => `<button class="swatch ${t === 'hl' ? 'hl' : ''} ${c === cur ? 'on' : ''}" data-color="${c}" ${t === 'pen' ? `data-pen-i="${i}"` : ''} style="--c:${c}" aria-label="Colour ${c}"></button>`).join('')
+      + `<label class="swatch custom ${custom ? 'on' : ''}" style="--c:${custom ? cur : 'transparent'}" aria-label="Custom colour"><input type="color" value="${cur}"></label>`
+      + (t === 'pen' ? `<button type="button" class="swatch-edit" aria-label="Edit pen colours">Edit</button>` : '');
   }
   const sizes = t === 'hl' ? HL_SIZES : t === 'eraser' ? ERASER_SIZES : PEN_SIZES;
   const maxS = sizes[sizes.length - 1];
@@ -779,6 +781,73 @@ $('#swatches').addEventListener('input', (e) => {
   e.target.parentElement.style.setProperty('--c', e.target.value);
 });
 $('#swatches').addEventListener('change', (e) => { if (e.target.type === 'color') updateToolbar(); });
+
+function pickColor(start, onPick) {
+  const input = document.createElement('input');
+  input.type = 'color';
+  input.value = /^#[0-9a-fA-F]{6}$/.test(start) ? start : '#1c1c1e';
+  input.style.position = 'fixed';
+  input.style.left = '-999px';
+  document.body.appendChild(input);
+  input.addEventListener('change', () => { const v = input.value; input.remove(); onPick(v); });
+  input.addEventListener('cancel', () => input.remove());
+  input.click();
+}
+function penColors() { return settings.penColors || PEN_COLORS; }
+$('#swatches').addEventListener('click', (e) => {
+  const edit = e.target.closest('.swatch-edit');
+  if (!edit) return;
+  e.preventDefault();
+  const rows = penColors().map((c, i) => `<div class="pen-color-row"><span class="pen-dot" style="--c:${c}"></span><span class="pen-hex">${c}</span><button type="button" class="btn secondary sm" data-replace="${i}">Replace</button><button type="button" class="btn secondary sm" data-remove="${i}" ${penColors().length < 2 ? 'disabled' : ''}>Remove</button></div>`).join('');
+  const pop = h(`<div class="pen-colors-pop"><div class="pop-title">Pen colours</div>${rows}<button type="button" class="btn secondary pen-add" ${penColors().length >= 10 ? 'disabled' : ''}>Add colour</button><p class="pop-note">Hold a colour in the toolbar to replace it. These stay in the header.</p></div>`);
+  const opened = popover(edit, pop, { align: 'center', width: 300 });
+  opened.addEventListener('click', (ev) => {
+    const rep = ev.target.closest('[data-replace]');
+    const rem = ev.target.closest('[data-remove]');
+    if (rep) {
+      const i = +rep.dataset.replace;
+      pickColor(penColors()[i], (v) => {
+        settings.penColors[i] = v;
+        setToolColor(v);
+        saveSettings();
+        updateToolbar();
+        closePopover();
+      });
+    } else if (rem) {
+      settings.penColors.splice(+rem.dataset.remove, 1);
+      saveSettings();
+      updateToolbar();
+      closePopover();
+    } else if (ev.target.closest('.pen-add')) {
+      pickColor(settings.pen.color, (v) => {
+        settings.penColors.push(v);
+        setToolColor(v);
+        saveSettings();
+        updateToolbar();
+        closePopover();
+      });
+    }
+  });
+});
+let holdTimer = null;
+$('#swatches').addEventListener('pointerdown', (e) => {
+  const b = e.target.closest('[data-pen-i]');
+  if (!b || e.target.closest('input')) return;
+  holdTimer = setTimeout(() => {
+    holdTimer = null;
+    const i = +b.dataset.penI;
+    pickColor(penColors()[i], (v) => {
+      settings.penColors[i] = v;
+      setToolColor(v);
+      saveSettings();
+      updateToolbar();
+      toast('Pen colour replaced');
+    });
+  }, 500);
+});
+$('#swatches').addEventListener('pointerup', () => { clearTimeout(holdTimer); holdTimer = null; });
+$('#swatches').addEventListener('pointercancel', () => { clearTimeout(holdTimer); holdTimer = null; });
+$('#swatches').addEventListener('pointermove', () => { clearTimeout(holdTimer); holdTimer = null; });
 $('#sizes').addEventListener('click', (e) => {
   const b = e.target.closest('[data-size]');
   if (!b) return;
