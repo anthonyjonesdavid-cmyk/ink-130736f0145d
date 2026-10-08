@@ -16,6 +16,7 @@ export class Editor {
     this.zoom = 1;
     this.scale = 1;
     this.cur = null;      // active stroke
+    this.sel = null; this.lasso = null; this.moving = null; this.clip = [];
     this.erasing = null;  // active eraser drag
     this.pinch = null;
     this.live = document.createElement('canvas');
@@ -204,6 +205,7 @@ export class Editor {
     e.preventDefault();
     try { el.setPointerCapture(e.pointerId); } catch {}
     const tool = this.settings.tool;
+    if (tool === 'lasso') { this.onLassoDown(e, el); return; }
     if (tool === 'eraser') {
       this.erasing = { el, pointerId: e.pointerId, pointerType: e.pointerType, removed: [], last: null };
       this.attachLive(el, 5);
@@ -265,7 +267,187 @@ export class Editor {
     });
   }
 
+  onLassoDown(e, el) {
+    const [x, y] = this.toPage(e, el);
+    if (this.sel && this.sel.el === el && this.hitSel(x, y)) {
+      this.moving = { pointerId: e.pointerId, last: [x, y], handle: this.hitHandle(x, y), origin: this.sel.bounds, base: this.sel.strokes.map((st) => st.pts.map((pt) => pt.slice())) };
+      try { el.setPointerCapture(e.pointerId); } catch {}
+      return;
+    }
+    this.clearSelection();
+    this.lasso = { el, pointerId: e.pointerId, pts: [[x, y]], mode: this.settings.lassoMode || 'free' };
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    this.attachLive(el, 6);
+    this.drawLasso();
+  }
+  hitSel(x, y) {
+    const b = this.sel && this.sel.bounds;
+    if (!b) return false;
+    return x >= b.x - 8 && x <= b.x + b.w + 8 && y >= b.y - 8 && y <= b.y + b.h + 8;
+  }
+  hitHandle(x, y) {
+    const b = this.sel.bounds, m = 14;
+    const corners = [[b.x, b.y, 'nw'], [b.x + b.w, b.y, 'ne'], [b.x, b.y + b.h, 'sw'], [b.x + b.w, b.y + b.h, 'se']];
+    for (const [cx, cy, name] of corners) if (Math.hypot(x - cx, y - cy) < m) return name;
+    return null;
+  }
+  drawLasso() {
+    if (!this.lasso || !this.live) return;
+    const ctx = this.live.getContext('2d');
+    const k = this.live._k;
+    ctx.clearRect(0, 0, this.live.width, this.live.height);
+    const pts = this.lasso.pts;
+    if (pts.length < 2) return;
+    ctx.save();
+    ctx.strokeStyle = '#2f6bff';
+    ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
+    ctx.setLineDash([6 * (window.devicePixelRatio || 1), 5 * (window.devicePixelRatio || 1)]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0] * k, pts[0][1] * k);
+    for (const pt of pts) ctx.lineTo(pt[0] * k, pt[1] * k);
+    if (this.lasso.mode === 'box') ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+  finishLasso() {
+    const L = this.lasso;
+    this.lasso = null;
+    this.detachLive();
+    if (!L || L.pts.length < 2) return;
+    const inside = L.mode === 'box' ? this.boxTest(L.pts) : this.polyTest(L.pts);
+    const hits = L.el._page.strokes.filter((st) => st.pts.some((pt) => inside(pt[0], pt[1])));
+    if (!hits.length) { this.clearSelection(); return; }
+    this.sel = { el: L.el, strokes: hits };
+    this.fitSel();
+    this.onSelection?.(this.selectionInfo());
+  }
+  boxTest(pts) {
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    return (x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+  }
+  polyTest(pts) {
+    const poly = pts.length > 2 ? pts.concat([pts[0]]) : pts;
+    return (x, y) => {
+      let n = 0;
+      for (let i = 1; i < poly.length; i++) {
+        const [x1, y1] = poly[i - 1], [x2, y2] = poly[i];
+        if ((y1 > y) !== (y2 > y)) {
+          const ix = x1 + (y - y1) * (x2 - x1) / ((y2 - y1) || 1e-9);
+          if (x < ix) n++;
+        }
+      }
+      return n % 2 === 1;
+    };
+  }
+  fitSel() {
+    const pts = this.sel.strokes.flatMap((st) => st.pts);
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const pad = 8;
+    this.sel.bounds = { x: Math.min(...xs) - pad, y: Math.min(...ys) - pad, w: Math.max(...xs) - Math.min(...xs) + pad * 2, h: Math.max(...ys) - Math.min(...ys) + pad * 2 };
+    this.paintSel();
+  }
+  paintSel() {
+    this.clearOverlay();
+    const el = this.sel.el, b = this.sel.bounds, sc = this.scale;
+    const box = document.createElement('div');
+    box.className = 'sel-box';
+    box.style.left = b.x * sc + 'px';
+    box.style.top = b.y * sc + 'px';
+    box.style.width = b.w * sc + 'px';
+    box.style.height = b.h * sc + 'px';
+    el.appendChild(box);
+    this.sel.box = box;
+  }
+  clearOverlay() {
+    if (this.sel && this.sel.box) this.sel.box.remove();
+  }
+  clearSelection() {
+    this.clearOverlay();
+    this.sel = null;
+    this.onSelection?.(null);
+  }
+  selectionInfo() { return { bounds: this.sel.bounds, count: this.sel.strokes.length, hasClip: this.clip.length > 0 }; }
+  nudge(dx, dy, record = true) {
+    if (!this.sel) return;
+    for (const st of this.sel.strokes) for (const pt of st.pts) { pt[0] += dx; pt[1] += dy; }
+    this.sel.bounds.x += dx; this.sel.bounds.y += dy;
+    this.redrawInk(this.sel.el);
+    this.paintSel();
+    if (record) this.push({ t: 'nudge', pageId: this.sel.el._page.id, ids: this.sel.strokes.map((st) => st.id), dx, dy });
+  }
+  scaleSel(handle, x, y) {
+    const b = this.moving.origin;
+    const ax = handle.includes('w') ? b.x + b.w : b.x;
+    const ay = handle.includes('n') ? b.y + b.h : b.y;
+    const sx = Math.max(0.2, Math.min(6, (x - ax) / ((handle.includes('w') ? b.x : b.x + b.w) - ax || 1)));
+    const sy = Math.max(0.2, Math.min(6, (y - ay) / ((handle.includes('n') ? b.y : b.y + b.h) - ay || 1)));
+    this.sel.strokes.forEach((st, i) => {
+      const base = this.moving.base[i];
+      st.pts.forEach((pt, j) => { pt[0] = ax + (base[j][0] - ax) * sx; pt[1] = ay + (base[j][1] - ay) * sy; });
+    });
+    this.redrawInk(this.sel.el);
+    this.fitSel();
+  }
+  duplicateSelection() {
+    if (!this.sel) return;
+    const clones = this.sel.strokes.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => [pt[0] + 16, pt[1] + 16]) }));
+    this.sel.el._page.strokes.push(...clones);
+    this.push({ t: 'addMany', pageId: this.sel.el._page.id, strokes: clones });
+    this.sel.strokes = clones;
+    this.fitSel();
+    this.redrawInk(this.sel.el);
+    this.onSelection?.(this.selectionInfo());
+  }
+  copySelection() {
+    if (!this.sel) return;
+    this.clip = this.sel.strokes.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => pt.slice()) }));
+    this.onSelection?.(this.selectionInfo());
+  }
+  cutSelection() {
+    if (!this.sel) return;
+    this.copySelection();
+    const el = this.sel.el;
+    const items = this.sel.strokes.map((st) => ({ stroke: st, index: el._page.strokes.indexOf(st) })).filter((it) => it.index >= 0);
+    for (const st of this.sel.strokes) { const i = el._page.strokes.indexOf(st); if (i >= 0) el._page.strokes.splice(i, 1); }
+    this.push({ t: 'erase', pageId: el._page.id, items });
+    this.redrawInk(el);
+    this.clearSelection();
+  }
+  pasteSelection() {
+    if (!this.clip.length || !this.doc) return;
+    const el = (this.sel && this.sel.el) || this.pageEls[this.currentIndex] || this.pageEls[0];
+    if (!el) return;
+    const clones = this.clip.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => [pt[0] + 16, pt[1] + 16]) }));
+    el._page.strokes.push(...clones);
+    this.push({ t: 'addMany', pageId: el._page.id, strokes: clones });
+    this.sel = { el, strokes: clones };
+    this.fitSel();
+    this.redrawInk(el);
+    this.onSelection?.(this.selectionInfo());
+  }
+  styleSelection(color) {
+    if (!this.sel || !color) return;
+    const items = this.sel.strokes.map((st) => ({ id: st.id, from: st.color, to: color }));
+    for (const st of this.sel.strokes) st.color = color;
+    this.push({ t: 'recolor', pageId: this.sel.el._page.id, items });
+    this.redrawInk(this.sel.el);
+  }
+
   onMove(e) {
+    if (this.lasso && e.pointerId === this.lasso.pointerId) {
+      const [x, y] = this.toPage(e, this.lasso.el);
+      if (this.lasso.mode === 'box') this.lasso.pts = [this.lasso.pts[0], [x, this.lasso.pts[0][1]], [x, y], [this.lasso.pts[0][0], y]];
+      else this.lasso.pts.push([x, y]);
+      this.drawLasso();
+      return;
+    }
+    if (this.moving && e.pointerId === this.moving.pointerId) {
+      const [x, y] = this.toPage(e, this.sel.el);
+      if (this.moving.handle) this.scaleSel(this.moving.handle, x, y);
+      else { const dx = x - this.moving.last[0], dy = y - this.moving.last[1]; this.nudge(dx, dy, false); this.moving.last = [x, y]; this.moving.dx = (this.moving.dx || 0) + dx; this.moving.dy = (this.moving.dy || 0) + dy; }
+      return;
+    }
     if (this.cur && e.pointerId === this.cur.pointerId) {
       e.preventDefault();
       this.addPoints(e);
@@ -277,6 +459,13 @@ export class Editor {
   }
 
   onUp(e, cancelled) {
+    if (this.lasso && (!e || e.pointerId === this.lasso.pointerId)) { this.finishLasso(); return; }
+    if (this.moving && (!e || e.pointerId === this.moving.pointerId)) {
+      if (!this.moving.handle && (this.moving.dx || this.moving.dy)) this.push({ t: 'nudge', pageId: this.sel.el._page.id, ids: this.sel.strokes.map((st) => st.id), dx: this.moving.dx || 0, dy: this.moving.dy || 0 });
+      else if (this.moving.handle) this.push({ t: 'reshape', pageId: this.sel.el._page.id, ids: this.sel.strokes.map((st) => st.id), base: this.moving.base, next: this.sel.strokes.map((st) => st.pts.map((pt) => pt.slice())) });
+      this.moving = null;
+      return;
+    }
     if (this.cur && e.pointerId === this.cur.pointerId) {
       const { el, stroke } = this.cur;
       this.cur = null;
@@ -559,6 +748,24 @@ export class Editor {
       case 'paper':
         this.doc.meta.paper = { ...(undo ? a.from : a.to) };
         this.rerenderAll(); break;
+      case 'addMany':
+        if (undo) { for (const st of a.strokes) { const i = strokes.indexOf(st); if (i >= 0) strokes.splice(i, 1); } }
+        else strokes.push(...a.strokes);
+        this.redrawInk(el); break;
+      case 'nudge': {
+        const sign = undo ? -1 : 1;
+        for (const st of strokes) if (a.ids.includes(st.id)) for (const pt of st.pts) { pt[0] += a.dx * sign; pt[1] += a.dy * sign; }
+        this.redrawInk(el); break;
+      }
+      case 'reshape':
+        strokes.forEach((st) => {
+          const i = a.ids.indexOf(st.id);
+          if (i >= 0) st.pts = (undo ? a.base : a.next)[i].map((pt) => pt.slice());
+        });
+        this.redrawInk(el); break;
+      case 'recolor':
+        for (const it of a.items) { const st = strokes.find((x) => x.id === it.id); if (st) st.color = undo ? it.from : it.to; }
+        this.redrawInk(el); break;
     }
   }
   undo() {
