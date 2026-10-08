@@ -5,6 +5,7 @@ const P = {
   pen: '<path d="M12 20h9"/><path d="M16.4 3.6a2.1 2.1 0 0 1 3 3L7.4 18.6a2 2 0 0 1-.9.5l-2.9.8.8-2.9a2 2 0 0 1 .5-.9z"/>',
   hl: '<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>',
   eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
+  lasso: '<path d="M4 14c0-5 3.5-9 8-9s8 4 8 9-3.5 7-8 7c-2.2 0-4-.8-5.2-2.2"/><path d="M7 16.5 4.5 20"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   addPage: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>',
   pages: '<rect width="7" height="9" x="3" y="3" rx="1.5"/><rect width="7" height="9" x="14" y="3" rx="1.5"/><rect width="7" height="9" x="3" y="13" rx="1.5" opacity=".5"/><rect width="7" height="9" x="14" y="13" rx="1.5" opacity=".5"/>',
