@@ -483,3 +483,20 @@ body.privacy #privacyCover { display: grid; }
 .pen-hex { flex: 1; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink2); }
 .pen-color-row .btn.sm { height: 32px; padding: 0 10px; font-size: 13px; }
 .pen-add { width: 100%; margin-top: 4px; }
+
+.lasso-mode { height: 32px; padding: 0 12px; border-radius: 16px; font-size: 14px; font-weight: 650; color: var(--pill-fg); }
+.lasso-mode.on { background: var(--pill-sel); box-shadow: 0 0 0 1.5px var(--accent); }
+.color-pop { padding: 12px; }
+.color-pop-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 15px; }
+.pal-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+.pal-dot { width: 26px; height: 26px; border-radius: 50%; background: var(--c); box-shadow: inset 0 0 0 1px rgba(127,127,127,.4); }
+.pal-dot.on { box-shadow: inset 0 0 0 1px rgba(127,127,127,.4), 0 0 0 2px var(--popover, #222), 0 0 0 4px var(--accent); }
+.pal-wheel { width: 26px; height: 26px; border-radius: 50%; background: conic-gradient(#f44, #fd4, #4d6, #4cf, #64f, #f4c, #f44); }
+.pal-actions { display: flex; gap: 8px; margin-top: 12px; }
+.pal-actions .btn { flex: 1; }
+.sel-box { position: absolute; z-index: 7; border: 1.5px dashed #2f6bff; border-radius: 4px; pointer-events: none; }
+.sel-box::before, .sel-box::after { content: ""; position: absolute; width: 10px; height: 10px; border-radius: 50%; background: #2f6bff; }
+.sel-box::before { left: -5px; top: -5px; box-shadow: calc(100% + 0px) 0 0 #2f6bff; }
+.lasso-menu { position: absolute; z-index: 12; left: 50%; bottom: calc(var(--sab) + 18px); transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; }
+.lasso-menu button { height: 34px; padding: 0 12px; border-radius: 10px; color: var(--pill-fg); font-size: 14px; font-weight: 650; }
+.lasso-menu button:disabled { opacity: .35; }
