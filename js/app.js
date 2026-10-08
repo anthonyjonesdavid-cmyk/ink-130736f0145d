@@ -17,6 +17,7 @@ const DEFAULTS = {
   paper: { style: 'ruled', color: '#ffffff' },
   penTheme: { light: '#1c1c1e', dark: '#ffffff' },
   penColors: ['#1c1c1e', '#2f5bea', '#e0352b', '#16a05d', '#8a3ffc', '#f28c0f', '#ffffff'],
+  lassoMode: 'free',
 };
 const SETTINGS_KEY = 'inkwell.settings';
 const PEN_SIZE_MIGRATION_KEY = 'inkwell.pen-size-default-v2';
@@ -73,6 +74,7 @@ const editor = new Editor({
     b._snapT = setTimeout(() => { b.classList.remove('snap'); if (Math.abs(editor.zoom - 1) < 0.01) b.classList.add('hidden'); }, 900);
   },
   onHistoryChange: (u, r) => { $('#undoBtn').disabled = !u; $('#redoBtn').disabled = !r; },
+  onSelection: (info) => showLassoMenu(info),
 });
 window.__inkwell = { editor, store, settings, drive: { importRemote: (...a) => driveImportRemote(...a), test: driveTest } }; // handy for debugging / tests
 
@@ -742,6 +744,11 @@ function updateToolbar() {
   $('#docScroll').classList.toggle('finger-draw', !!settings.fingerDraw);
   const sw = $('#swatches'), sz = $('#sizes');
   const t = settings.tool;
+  if (t === 'lasso') {
+    sw.innerHTML = '';
+    sz.innerHTML = `<button type="button" class="lasso-mode ${settings.lassoMode !== 'box' ? 'on' : ''}" data-lasso="free">Freeform</button><button type="button" class="lasso-mode ${settings.lassoMode === 'box' ? 'on' : ''}" data-lasso="box">Boxed</button>`;
+    return;
+  }
   if (t === 'eraser') {
     sw.innerHTML = '<span class="tool-note">Stroke eraser — touch a stroke to remove it</span>';
   } else {
@@ -749,8 +756,7 @@ function updateToolbar() {
     const cur = settings[t].color;
     const custom = !colors.includes(cur);
     sw.innerHTML = colors.map((c, i) => `<button class="swatch ${t === 'hl' ? 'hl' : ''} ${c === cur ? 'on' : ''}" data-color="${c}" ${t === 'pen' ? `data-pen-i="${i}"` : ''} style="--c:${c}" aria-label="Colour ${c}"></button>`).join('')
-      + `<label class="swatch custom ${custom ? 'on' : ''}" style="--c:${custom ? cur : 'transparent'}" aria-label="Custom colour"><input type="color" value="${cur}"></label>`
-      + (t === 'pen' ? `<button type="button" class="swatch-edit" aria-label="Edit pen colours">Edit</button>` : '');
+      + (t === 'hl' ? `<label class="swatch custom ${custom ? 'on' : ''}" style="--c:${custom ? cur : 'transparent'}" aria-label="Custom colour"><input type="color" value="${cur}"></label>` : '');
   }
   const sizes = t === 'hl' ? HL_SIZES : t === 'eraser' ? ERASER_SIZES : PEN_SIZES;
   const maxS = sizes[sizes.length - 1];
@@ -763,12 +769,53 @@ function updateToolbar() {
 $('#toolSeg').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tool]');
   if (!b) return;
-  settings.tool = b.dataset.tool; saveSettings(); updateToolbar();
+  settings.tool = b.dataset.tool;
+  if (settings.tool !== 'lasso') editor.clearSelection();
+  saveSettings(); updateToolbar();
 });
+const PEN_PALETTE = ['#ffe14a','#ff9f1a','#ff3b30','#ff2d8a','#c6ff4a','#34c759','#5ac8fa','#bf5af2','#248a3d','#007aff','#1d4ed8','#5e5ce6','#ffffff','#aeaeb2','#1c1c1e','#a47148'];
+function openPenPalette(anchor, index) {
+  const current = penColors()[index];
+  const dots = PEN_PALETTE.map((c) => `<button type="button" class="pal-dot ${c.toLowerCase() === current.toLowerCase() ? 'on' : ''}" data-pal="${c}" style="--c:${c}" aria-label="${c}"></button>`).join('');
+  const pop = h(`<div class="color-pop"><div class="color-pop-h"><b>Colors</b><button type="button" class="pal-wheel" aria-label="Custom colour"></button></div><div class="pal-grid">${dots}</div><div class="pal-actions"><button type="button" class="btn secondary sm" data-add ${penColors().length >= 10 ? 'disabled' : ''}>Add</button><button type="button" class="btn secondary sm" data-remove ${penColors().length < 2 ? 'disabled' : ''}>Remove</button></div></div>`);
+  const opened = popover(anchor, pop, { align: 'center', width: 268 });
+  opened.addEventListener('click', (ev) => {
+    const dot = ev.target.closest('[data-pal]');
+    if (dot) {
+      settings.penColors[index] = dot.dataset.pal;
+      setToolColor(dot.dataset.pal);
+      saveSettings(); updateToolbar(); closePopover();
+    } else if (ev.target.closest('[data-add]')) {
+      settings.penColors.push(current);
+      saveSettings(); updateToolbar(); closePopover();
+    } else if (ev.target.closest('[data-remove]')) {
+      settings.penColors.splice(index, 1);
+      saveSettings(); updateToolbar(); closePopover();
+    } else if (ev.target.closest('.pal-wheel')) {
+      pickColor(current, (v) => { settings.penColors[index] = v; setToolColor(v); saveSettings(); updateToolbar(); closePopover(); });
+    }
+  });
+}
+function showLassoMenu(info) {
+  document.querySelector('.lasso-menu')?.remove();
+  if (!info) return;
+  const bar = h(`<div class="lasso-menu pillbar"><button type="button" data-act="style">Style</button><button type="button" data-act="duplicate">Duplicate</button><button type="button" data-act="cut">Cut</button><button type="button" data-act="copy">Copy</button><button type="button" data-act="paste" ${editor.clip.length ? '' : 'disabled'}>Paste</button></div>`);
+  $('#editor').appendChild(bar);
+  bar.addEventListener('click', (ev) => {
+    const act = ev.target.closest('[data-act]')?.dataset.act;
+    if (act === 'style') { editor.styleSelection(settings.pen.color); toast('Restyled with the current pen colour'); }
+    if (act === 'duplicate') editor.duplicateSelection();
+    if (act === 'cut') editor.cutSelection();
+    if (act === 'copy') { editor.copySelection(); toast('Copied'); }
+    if (act === 'paste') editor.pasteSelection();
+  });
+}
 $('#swatches').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-color]');
-  if (!b) return;
-  setToolColor(b.dataset.color); updateToolbar();
+  const b = e.target.closest('[data-pen-i]');
+  if (b && settings.tool === 'pen') { setToolColor(b.dataset.color); openPenPalette(b, +b.dataset.penI); return; }
+  const c = e.target.closest('[data-color]');
+  if (!c) return;
+  setToolColor(c.dataset.color); updateToolbar();
 });
 function setToolColor(c) {
   settings[settings.tool].color = c;
@@ -849,6 +896,8 @@ $('#swatches').addEventListener('pointerup', () => { clearTimeout(holdTimer); ho
 $('#swatches').addEventListener('pointercancel', () => { clearTimeout(holdTimer); holdTimer = null; });
 $('#swatches').addEventListener('pointermove', () => { clearTimeout(holdTimer); holdTimer = null; });
 $('#sizes').addEventListener('click', (e) => {
+  const mode = e.target.closest('[data-lasso]');
+  if (mode) { settings.lassoMode = mode.dataset.lasso; saveSettings(); updateToolbar(); return; }
   const b = e.target.closest('[data-size]');
   if (!b) return;
   settings[settings.tool].size = parseFloat(b.dataset.size); saveSettings(); updateToolbar();
