@@ -168,7 +168,7 @@ export class Editor {
     const s = this.scroll;
     s.addEventListener('scroll', () => {
       if (this._sraf) return;
-      this._sraf = requestAnimationFrame(() => { this._sraf = 0; this.updateVisible(); });
+      this._sraf = requestAnimationFrame(() => { this._sraf = 0; this.updateVisible(); this.maybeExtend(); });
     }, { passive: true });
     this.wrap.addEventListener('pointerdown', (e) => this.onDown(e));
     window.addEventListener('pointermove', (e) => this.onMove(e), { passive: false });
@@ -473,15 +473,28 @@ export class Editor {
     this.scroll.scrollTo({ top: Math.max(0, el.offsetTop - (this.zoom < 0.999 ? 16 : 0)), behavior: smooth ? 'smooth' : 'auto' });
   }
 
-  addPage(afterIndex = this.currentIndex ?? this.pageEls.length - 1) {
+  addPage(afterIndex = this.currentIndex ?? this.pageEls.length - 1, { scroll = true } = {}) {
     const pages = this.doc.body.pages;
     const ref = pages[afterIndex] || pages[pages.length - 1];
     const page = { id: uid(), kind: 'paper', w: ref ? ref.w : 612, h: ref ? ref.h : 792, strokes: [] };
     const index = afterIndex + 1;
     this.insertPage(index, page);
     this.push({ t: 'addPage', index, page });
-    requestAnimationFrame(() => this.scrollToPage(index));
+    if (scroll) requestAnimationFrame(() => this.scrollToPage(index));
     return index;
+  }
+
+  // Keep a blank page waiting when the writer reaches the bottom. Notebooks only.
+  maybeExtend() {
+    if (!this.doc || this._extending || this.pinch) return;
+    if (this.doc.meta && this.doc.meta.kind === 'pdf') return;
+    const s = this.scroll;
+    if (!s || s.scrollTop < 32) return;
+    const remaining = s.scrollHeight - s.scrollTop - s.clientHeight;
+    if (remaining > 160) return;
+    this._extending = true;
+    try { this.addPage(this.pageEls.length - 1, { scroll: false }); }
+    finally { this._extending = false; }
   }
 
   insertPage(index, page) {
