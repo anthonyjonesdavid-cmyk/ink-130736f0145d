@@ -1,6 +1,6 @@
 // The note editor: scrolling page column, Apple Pencil drawing, palm rejection, pinch zoom, undo/redo.
 import {
-  drawPaper, drawStroke, drawStrokes, strokePath2D, strokeOutline, outlineToPath, strokeHit, hlBlend, hlAlpha,
+  drawPaper, drawStroke, drawStrokes, strokePath2D, strokeOutline, outlineToPath, strokeHit, strokeBounds, hlBlend, hlAlpha, loadImage,
 } from './render.js';
 import { uid } from './store.js';
 
@@ -10,13 +10,14 @@ const SNAP_RANGE = 0.08;   // a pinch that ends within ±8% of 100% eases to exa
 const SNAP_MS = 170;
 
 export class Editor {
-  constructor({ scroll, wrap, settings, onChange, onPageChange, onZoomChange, onZoomSnap, onHistoryChange }) {
-    Object.assign(this, { scroll, wrap, settings, onChange, onPageChange, onZoomChange, onZoomSnap, onHistoryChange });
+  constructor({ scroll, wrap, settings, onChange, onPageChange, onZoomChange, onZoomSnap, onHistoryChange, onSelection }) {
+    Object.assign(this, { scroll, wrap, settings, onChange, onPageChange, onZoomChange, onZoomSnap, onHistoryChange, onSelection });
+    this.revs = new WeakMap(); // page -> edit counter (page thumbnails use it to know when to redraw)
     this.doc = null;
     this.zoom = 1;
     this.scale = 1;
     this.cur = null;      // active stroke
-    this.sel = null; this.lasso = null; this.moving = null; this.clip = [];
+    this.sel = null; this.lasso = null; this.moving = null; this.clip = null;
     this.erasing = null;  // active eraser drag
     this.pinch = null;
     this.live = document.createElement('canvas');
@@ -27,7 +28,9 @@ export class Editor {
 
   /* ---------------- lifecycle ---------------- */
   open(doc) {
+    this.resetSelectionState();
     this.doc = doc;
+    pruneAssets(doc.body);
     this.undoStack = []; this.redoStack = [];
     this.zoom = 1;
     this.wrap.innerHTML = '';
@@ -40,6 +43,7 @@ export class Editor {
   }
   close() {
     this.cancelActive();
+    this.resetSelectionState();
     for (const el of this.pageEls || []) this.release(el);
     this.wrap.innerHTML = '';
     this.pageEls = [];
@@ -65,7 +69,9 @@ export class Editor {
     for (const el of this.pageEls) {
       el.style.width = Math.round(el._page.w * this.scale) + 'px';
       el.style.height = Math.round(el._page.h * this.scale) + 'px';
+      if (el._rs) this.renderImages(el);
     }
+    if (this.sel) this.paintSel(); // keep the selection box on its strokes after a zoom
   }
 
   /* ---------------- virtualised rendering ---------------- */
@@ -131,8 +137,32 @@ export class Editor {
       drawPaper(ctx, p.w, p.h, this.doc.meta.paper, k);
       el.classList.add('ready');
     }
+    this.renderImages(el);
     this.redrawInk(el, W, H);
   }
+
+  // Photos are <img> elements in their own layer (between the paper and the ink), positioned in CSS px.
+  renderImages(el) {
+    const list = el._page.images || [];
+    let box = el.querySelector(':scope > .imgs');
+    if (!list.length) { if (box) box.remove(); return; }
+    if (!box) { box = document.createElement('div'); box.className = 'layer imgs'; el.appendChild(box); }
+    const assets = (this.doc && this.doc.body.assets) || {};
+    const sc = this.scale;
+    const have = new Map([...box.children].map((n) => [n.dataset.id, n]));
+    list.forEach((im, i) => {
+      let n = have.get(im.id);
+      if (!n) { n = document.createElement('img'); n.dataset.id = im.id; n.alt = ''; n.draggable = false; n.decoding = 'async'; }
+      have.delete(im.id);
+      const url = assets[im.src] || '';
+      if (n.getAttribute('src') !== url) n.setAttribute('src', url);
+      n.style.left = im.x * sc + 'px'; n.style.top = im.y * sc + 'px';
+      n.style.width = im.w * sc + 'px'; n.style.height = im.h * sc + 'px';
+      if (box.children[i] !== n) box.insertBefore(n, box.children[i] || null);
+    });
+    for (const n of have.values()) n.remove();
+  }
+  redraw(el) { if (el && el._rs) { this.renderImages(el); this.redrawInk(el); } }
 
   redrawInk(el, W, H) {
     if (!el._rs) return;
@@ -155,6 +185,7 @@ export class Editor {
     el._token = null;
     if (el._task) { try { el._task.cancel(); } catch {} el._task = null; }
     for (const c of el.querySelectorAll('canvas')) { if (c !== this.live) { c.width = 0; c.height = 0; c.remove(); } }
+    el.querySelector(':scope > .imgs')?.remove();
     el._rs = 0;
     el.classList.remove('ready');
   }
@@ -196,16 +227,31 @@ export class Editor {
   }
 
   onDown(e) {
-    if (!this.doc || !this.canDraw(e)) return;
+    if (!this.doc) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // palm rejection: once the Pencil is down, ignore every other contact
-    if (this.cur || this.erasing) return;
     const el = e.target.closest('.page');
     if (!el) return;
+    // the Pencil takes over from a finger that is dragging a selection (e.g. a resting palm)
+    if (this.moving && this.moving.pointerType === 'touch' && e.pointerType === 'pen') this.endMove();
+    // palm rejection: once the Pencil (or a finger) is busy, ignore every other contact
+    if (this.cur || this.erasing || this.lasso || this.moving) return;
+    // a selection can be dragged / resized with the Pencil or a finger, whatever tool is active
+    if (this.sel && this.sel.el === el) {
+      const [x, y] = this.toPage(e, el);
+      const handle = this.hitHandle(x, y);
+      if (handle || this.hitSel(x, y)) { e.preventDefault(); this.startMove(e, el, handle, x, y); return; }
+    }
+    if (!this.canDraw(e)) {
+      // a finger tap (not a scroll) outside the selection drops it
+      if (this.sel) this.tapOut = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+      return;
+    }
     e.preventDefault();
     try { el.setPointerCapture(e.pointerId); } catch {}
     const tool = this.settings.tool;
     if (tool === 'lasso') { this.onLassoDown(e, el); return; }
+    // with another tool, the first touch outside a selection just drops it (so it doesn't leave a dot)
+    if (this.sel) { this.clearSelection(); this.swallow = e.pointerId; return; }
     if (tool === 'eraser') {
       this.erasing = { el, pointerId: e.pointerId, pointerType: e.pointerType, removed: [], last: null };
       this.attachLive(el, 5);
@@ -267,59 +313,86 @@ export class Editor {
     });
   }
 
+  /* ---------------- lasso & selection ----------------
+     sel = { el, strokes: [stroke], images: [image], bounds: {x, y, w, h} }   (page units, padded)
+     Strokes and photos are never edited in place: a move/resize gives each stroke a new pts array (so the outline and
+     bounds caches in render.js notice) and history keeps before/after snapshots ('xform'). */
+  resetSelectionState() {
+    if (this.lasso) { this.lasso = null; this.detachLive(); }
+    if (this._mraf) { cancelAnimationFrame(this._mraf); this._mraf = 0; }
+    this.moving = null; this.tapOut = null; this.swallow = null;
+    if (this.sel) this.clearSelection();
+  }
   onLassoDown(e, el) {
     const [x, y] = this.toPage(e, el);
-    if (this.sel && this.sel.el === el && this.hitSel(x, y)) {
-      this.moving = { pointerId: e.pointerId, last: [x, y], handle: this.hitHandle(x, y), origin: this.sel.bounds, base: this.sel.strokes.map((st) => st.pts.map((pt) => pt.slice())) };
-      try { el.setPointerCapture(e.pointerId); } catch {}
-      return;
-    }
-    this.clearSelection();
+    if (this.sel) this.clearSelection();
     this.lasso = { el, pointerId: e.pointerId, pts: [[x, y]], mode: this.settings.lassoMode || 'free' };
-    try { el.setPointerCapture(e.pointerId); } catch {}
     this.attachLive(el, 6);
     this.drawLasso();
   }
   hitSel(x, y) {
     const b = this.sel && this.sel.bounds;
     if (!b) return false;
-    return x >= b.x - 8 && x <= b.x + b.w + 8 && y >= b.y - 8 && y <= b.y + b.h + 8;
+    const m = 10 / this.scale;
+    return x >= b.x - m && x <= b.x + b.w + m && y >= b.y - m && y <= b.y + b.h + m;
   }
+  // corner handles: a 48px (screen) target around each corner, whatever the zoom
   hitHandle(x, y) {
-    const b = this.sel.bounds, m = 14;
+    const b = this.sel && this.sel.bounds;
+    if (!b) return null;
+    const r = 24 / this.scale;
     const corners = [[b.x, b.y, 'nw'], [b.x + b.w, b.y, 'ne'], [b.x, b.y + b.h, 'sw'], [b.x + b.w, b.y + b.h, 'se']];
-    for (const [cx, cy, name] of corners) if (Math.hypot(x - cx, y - cy) < m) return name;
-    return null;
+    let best = null, bd = Infinity;
+    for (const [cx, cy, name] of corners) { const d = Math.hypot(x - cx, y - cy); if (d < r && d < bd) { bd = d; best = name; } }
+    return best;
   }
   drawLasso() {
     if (!this.lasso || !this.live) return;
     const ctx = this.live.getContext('2d');
-    const k = this.live._k;
+    const k = this.live._k, pr = k / this.scale;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.live.width, this.live.height);
     const pts = this.lasso.pts;
     if (pts.length < 2) return;
     ctx.save();
-    ctx.strokeStyle = '#2f6bff';
-    ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
-    ctx.setLineDash([6 * (window.devicePixelRatio || 1), 5 * (window.devicePixelRatio || 1)]);
     ctx.beginPath();
     ctx.moveTo(pts[0][0] * k, pts[0][1] * k);
     for (const pt of pts) ctx.lineTo(pt[0] * k, pt[1] * k);
-    if (this.lasso.mode === 'box') ctx.closePath();
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(47,107,255,0.07)'; ctx.fill();
+    ctx.strokeStyle = '#2f6bff';
+    ctx.lineWidth = 1.5 * pr;
+    ctx.setLineDash([6 * pr, 5 * pr]);
     ctx.stroke();
     ctx.restore();
   }
-  finishLasso() {
+  finishLasso(cancelled) {
     const L = this.lasso;
     this.lasso = null;
     this.detachLive();
-    if (!L || L.pts.length < 2) return;
-    const inside = L.mode === 'box' ? this.boxTest(L.pts) : this.polyTest(L.pts);
-    const hits = L.el._page.strokes.filter((st) => st.pts.some((pt) => inside(pt[0], pt[1])));
-    if (!hits.length) { this.clearSelection(); return; }
-    this.sel = { el: L.el, strokes: hits };
-    this.fitSel();
-    this.onSelection?.(this.selectionInfo());
+    if (!L || cancelled) { this.emitSel(); return; }
+    const p = L.el._page, imgs = p.images || [];
+    const xs = L.pts.map((q) => q[0]), ys = L.pts.map((q) => q[1]);
+    const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    let strokes = [], images = [];
+    if (L.pts.length < 3 || span < 12 / this.scale) {
+      // a tap: select the stroke (topmost) or else the photo under the tip
+      const [x, y] = L.pts[L.pts.length - 1];
+      const st = [...p.strokes].reverse().find((s) => strokeHit(s, x, y, 6 / this.scale));
+      if (st) strokes = [st];
+      else { const im = [...imgs].reverse().find((m) => inRect(m, x, y)); if (im) images = [im]; }
+    } else {
+      const inside = L.mode === 'box' ? this.boxTest(L.pts) : this.polyTest(L.pts);
+      strokes = p.strokes.filter((st) => strokeInside(st, inside));
+      images = imgs.filter((m) => imageInside(m, inside));
+      if (!strokes.length && !images.length) {
+        // a loop drawn on top of a photo selects that photo
+        const im = [...imgs].reverse().find((m) => L.pts.every(([x, y]) => inRect(m, x, y)));
+        if (im) images = [im];
+      }
+    }
+    if (!strokes.length && !images.length) { this.clearSelection(); return; }
+    this.select(L.el, strokes, images);
   }
   boxTest(pts) {
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
@@ -340,98 +413,230 @@ export class Editor {
       return n % 2 === 1;
     };
   }
+  select(el, strokes, images = []) {
+    if (this.sel && this.sel.el !== el) this.clearOverlay();
+    this.sel = { el, strokes, images, box: this.sel && this.sel.el === el ? this.sel.box : null };
+    this.fitSel();
+    this.emitSel();
+  }
   fitSel() {
-    const pts = this.sel.strokes.flatMap((st) => st.pts);
-    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-    const pad = 8;
-    this.sel.bounds = { x: Math.min(...xs) - pad, y: Math.min(...ys) - pad, w: Math.max(...xs) - Math.min(...xs) + pad * 2, h: Math.max(...ys) - Math.min(...ys) + pad * 2 };
+    if (!this.sel) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const st of this.sel.strokes) {
+      const b = strokeBounds(st);
+      const pad = st.size / 2; // strokeBounds pads by the full size; the visible ink is about half of it
+      x0 = Math.min(x0, b[0] + pad); y0 = Math.min(y0, b[1] + pad); x1 = Math.max(x1, b[2] - pad); y1 = Math.max(y1, b[3] - pad);
+    }
+    for (const m of this.sel.images) { x0 = Math.min(x0, m.x); y0 = Math.min(y0, m.y); x1 = Math.max(x1, m.x + m.w); y1 = Math.max(y1, m.y + m.h); }
+    if (!isFinite(x0)) { this.clearSelection(); return; }
+    const pad = this.sel.strokes.length ? 6 : 0; // photos alone: handles sit right on the photo's corners
+    this.sel.bounds = { x: x0 - pad, y: y0 - pad, w: x1 - x0 + pad * 2, h: y1 - y0 + pad * 2 };
     this.paintSel();
   }
   paintSel() {
-    this.clearOverlay();
-    const el = this.sel.el, b = this.sel.bounds, sc = this.scale;
-    const box = document.createElement('div');
-    box.className = 'sel-box';
+    const S = this.sel;
+    if (!S || !S.bounds) return;
+    const b = S.bounds, sc = this.scale;
+    let box = S.box;
+    if (!box || box.parentNode !== S.el) {
+      box?.remove();
+      box = document.createElement('div');
+      box.className = 'sel-box';
+      box.innerHTML = '<i class="sel-h nw"></i><i class="sel-h ne"></i><i class="sel-h sw"></i><i class="sel-h se"></i>';
+      S.el.appendChild(box);
+      S.box = box;
+    }
     box.style.left = b.x * sc + 'px';
     box.style.top = b.y * sc + 'px';
     box.style.width = b.w * sc + 'px';
     box.style.height = b.h * sc + 'px';
-    el.appendChild(box);
-    this.sel.box = box;
   }
   clearOverlay() {
-    if (this.sel && this.sel.box) this.sel.box.remove();
+    if (this.sel && this.sel.box) { this.sel.box.remove(); this.sel.box = null; }
   }
   clearSelection() {
     this.clearOverlay();
     this.sel = null;
-    this.onSelection?.(null);
+    this.emitSel();
   }
-  selectionInfo() { return { bounds: this.sel.bounds, count: this.sel.strokes.length, hasClip: this.clip.length > 0 }; }
-  nudge(dx, dy, record = true) {
-    if (!this.sel) return;
-    for (const st of this.sel.strokes) for (const pt of st.pts) { pt[0] += dx; pt[1] += dy; }
-    this.sel.bounds.x += dx; this.sel.bounds.y += dy;
-    this.redrawInk(this.sel.el);
-    this.paintSel();
-    if (record) this.push({ t: 'nudge', pageId: this.sel.el._page.id, ids: this.sel.strokes.map((st) => st.id), dx, dy });
+  emitSel() { this.onSelection?.(this.sel ? this.selectionInfo() : null); }
+  hasClip() { return !!(this.clip && (this.clip.strokes?.length || this.clip.images?.length)); }
+  selectionInfo() {
+    const S = this.sel;
+    return { bounds: S.bounds, count: S.strokes.length + S.images.length, strokes: S.strokes.length, images: S.images.length, hasClip: this.hasClip() };
   }
-  scaleSel(handle, x, y) {
-    const b = this.moving.origin;
-    const ax = handle.includes('w') ? b.x + b.w : b.x;
-    const ay = handle.includes('n') ? b.y + b.h : b.y;
-    const sx = Math.max(0.2, Math.min(6, (x - ax) / ((handle.includes('w') ? b.x : b.x + b.w) - ax || 1)));
-    const sy = Math.max(0.2, Math.min(6, (y - ay) / ((handle.includes('n') ? b.y : b.y + b.h) - ay || 1)));
-    this.sel.strokes.forEach((st, i) => {
-      const base = this.moving.base[i];
-      st.pts.forEach((pt, j) => { pt[0] = ax + (base[j][0] - ax) * sx; pt[1] = ay + (base[j][1] - ay) * sy; });
+  snapshot() {
+    return {
+      strokes: this.sel.strokes.map((st) => ({ pts: st.pts, size: st.size })),
+      images: this.sel.images.map((m) => ({ x: m.x, y: m.y, w: m.w, h: m.h, src: m.src })),
+    };
+  }
+
+  /* move / resize (corner handles keep the aspect ratio; ink widths scale too) */
+  startMove(e, el, handle, x, y) {
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    this.moving = { pointerId: e.pointerId, pointerType: e.pointerType, handle, start: [x, y], origin: { ...this.sel.bounds }, before: this.snapshot(), moved: false };
+    this.sel.box?.classList.add('active');
+  }
+  moveTo(x, y) {
+    const M = this.moving, S = this.sel;
+    if (!M || !S) return;
+    const o = M.origin, B = M.before;
+    let f, k = 1;
+    if (M.handle) {
+      const w = M.handle.includes('w'), n = M.handle.includes('n');
+      const ax = w ? o.x + o.w : o.x, ay = n ? o.y + o.h : o.y;          // fixed (opposite) corner
+      const vx = (w ? o.x : o.x + o.w) - ax, vy = (n ? o.y : o.y + o.h) - ay; // anchor -> dragged corner
+      k = ((x - ax) * vx + (y - ay) * vy) / ((vx * vx + vy * vy) || 1);
+      k = Math.max(Math.max(0.05, 20 / Math.max(1, Math.min(o.w, o.h))), Math.min(8, k));
+      f = (px, py) => [ax + (px - ax) * k, ay + (py - ay) * k];
+    } else {
+      let dx = x - M.start[0], dy = y - M.start[1];
+      const P = S.el._page, m = 24; // keep a bit of the selection on the page
+      dx = Math.max(m - (o.x + o.w), Math.min(P.w - m - o.x, dx));
+      dy = Math.max(m - (o.y + o.h), Math.min(P.h - m - o.y, dy));
+      f = (px, py) => [px + dx, py + dy];
+    }
+    const r2 = (v) => Math.round(v * 100) / 100;
+    S.strokes.forEach((st, i) => {
+      const b = B.strokes[i];
+      st.pts = b.pts.map((pt) => { const [X, Y] = f(pt[0], pt[1]); return pt.length > 2 ? [r2(X), r2(Y), pt[2]] : [r2(X), r2(Y)]; });
+      st.size = Math.round(b.size * k * 1000) / 1000;
     });
-    this.redrawInk(this.sel.el);
+    S.images.forEach((im, i) => {
+      const b = B.images[i];
+      const [X, Y] = f(b.x, b.y);
+      im.x = r2(X); im.y = r2(Y); im.w = r2(b.w * k); im.h = r2(b.h * k);
+    });
+    M.moved = true;
+    this.redraw(S.el);
     this.fitSel();
+  }
+  endMove() {
+    const M = this.moving;
+    this.moving = null;
+    if (this._mraf) { cancelAnimationFrame(this._mraf); this._mraf = 0; }
+    if (!M || !this.sel) return;
+    if (M.next) this.moveTo(...M.next);
+    this.sel.box?.classList.remove('active');
+    if (!M.moved) return;
+    this.push({ t: 'xform', pageId: this.sel.el._page.id, strokes: this.sel.strokes.slice(), images: this.sel.images.slice(), before: M.before, after: this.snapshot() });
+    this.fitSel();
+    this.emitSel();
+  }
+
+  /* menu actions */
+  cloneItems(strokes, images, dx, dy) {
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return {
+      strokes: strokes.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => { const q = pt.slice(); q[0] = r2(q[0] + dx); q[1] = r2(q[1] + dy); return q; }) })),
+      images: images.map((m) => ({ ...m, id: uid(), x: r2(m.x + dx), y: r2(m.y + dy) })),
+    };
+  }
+  addItems(el, strokes, images) {
+    const p = el._page;
+    p.strokes.push(...strokes);
+    if (images.length) (p.images || (p.images = [])).push(...images);
+    this.push({ t: 'addItems', pageId: p.id, strokes, images });
+    this.redraw(el);
+    this.select(el, strokes, images);
   }
   duplicateSelection() {
     if (!this.sel) return;
-    const clones = this.sel.strokes.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => [pt[0] + 16, pt[1] + 16]) }));
-    this.sel.el._page.strokes.push(...clones);
-    this.push({ t: 'addMany', pageId: this.sel.el._page.id, strokes: clones });
-    this.sel.strokes = clones;
-    this.fitSel();
-    this.redrawInk(this.sel.el);
-    this.onSelection?.(this.selectionInfo());
+    const c = this.cloneItems(this.sel.strokes, this.sel.images, 16, 16);
+    this.addItems(this.sel.el, c.strokes, c.images);
   }
   copySelection() {
     if (!this.sel) return;
-    this.clip = this.sel.strokes.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => pt.slice()) }));
-    this.onSelection?.(this.selectionInfo());
+    const assets = this.doc.body.assets || {}, used = {};
+    for (const m of this.sel.images) used[m.src] = assets[m.src];
+    // the clipboard carries the photo data too, so it can be pasted into another note
+    this.clip = { ...this.cloneItems(this.sel.strokes, this.sel.images, 0, 0), assets: used, bounds: { ...this.sel.bounds }, pageId: this.sel.el._page.id };
+    this.emitSel();
+  }
+  deleteSelection() {
+    if (!this.sel) return;
+    const el = this.sel.el, p = el._page;
+    const strokes = this.sel.strokes.map((st) => ({ stroke: st, index: p.strokes.indexOf(st) })).filter((it) => it.index >= 0);
+    const images = this.sel.images.map((m) => ({ image: m, index: (p.images || []).indexOf(m) })).filter((it) => it.index >= 0);
+    for (const { stroke } of strokes) p.strokes.splice(p.strokes.indexOf(stroke), 1);
+    for (const { image } of images) p.images.splice(p.images.indexOf(image), 1);
+    this.push({ t: 'removeItems', pageId: p.id, strokes, images });
+    this.redraw(el);
+    this.clearSelection();
   }
   cutSelection() {
     if (!this.sel) return;
     this.copySelection();
-    const el = this.sel.el;
-    const items = this.sel.strokes.map((st) => ({ stroke: st, index: el._page.strokes.indexOf(st) })).filter((it) => it.index >= 0);
-    for (const st of this.sel.strokes) { const i = el._page.strokes.indexOf(st); if (i >= 0) el._page.strokes.splice(i, 1); }
-    this.push({ t: 'erase', pageId: el._page.id, items });
-    this.redrawInk(el);
-    this.clearSelection();
+    this.deleteSelection();
   }
+  // the part of a page that is on screen, in page units
+  visibleRect(el) {
+    const r = el.getBoundingClientRect(), s = this.scroll.getBoundingClientRect(), sc = this.scale;
+    const top = s.top + Math.max(60, (this.topInset && this.topInset()) || 0); // keep clear of the floating toolbars
+    const x0 = Math.max(r.left, s.left), x1 = Math.min(r.right, s.right), y0 = Math.max(r.top, top), y1 = Math.min(r.bottom, s.bottom - 60);
+    if (x1 - x0 < 40 || y1 - y0 < 40) return { x: 0, y: 0, w: el._page.w, h: el._page.h };
+    return { x: (x0 - r.left) / sc, y: (y0 - r.top) / sc, w: (x1 - x0) / sc, h: (y1 - y0) / sc };
+  }
+  targetPage() { return (this.sel && this.sel.el) || this.pageEls[this.currentIndex] || this.pageEls[0]; }
   pasteSelection() {
-    if (!this.clip.length || !this.doc) return;
-    const el = (this.sel && this.sel.el) || this.pageEls[this.currentIndex] || this.pageEls[0];
+    if (!this.hasClip() || !this.doc) return;
+    const el = this.targetPage();
     if (!el) return;
-    const clones = this.clip.map((st) => ({ ...st, id: uid(), pts: st.pts.map((pt) => [pt[0] + 16, pt[1] + 16]) }));
-    el._page.strokes.push(...clones);
-    this.push({ t: 'addMany', pageId: el._page.id, strokes: clones });
-    this.sel = { el, strokes: clones };
-    this.fitSel();
-    this.redrawInk(el);
-    this.onSelection?.(this.selectionInfo());
+    const b = this.clip.bounds, v = this.visibleRect(el);
+    let dx = 16, dy = 16;
+    const fits = this.clip.pageId === el._page.id && b.x + dx >= v.x && b.y + dy >= v.y && b.x + b.w + dx <= v.x + v.w && b.y + b.h + dy <= v.y + v.h;
+    if (!fits) { dx = v.x + v.w / 2 - (b.x + b.w / 2); dy = v.y + v.h / 2 - (b.y + b.h / 2); }
+    const c = this.cloneItems(this.clip.strokes, this.clip.images, dx, dy);
+    if (c.images.length) {
+      const assets = this.doc.body.assets || (this.doc.body.assets = {});
+      for (const [k, url] of Object.entries(this.clip.assets || {})) if (url && !assets[k]) assets[k] = url;
+    }
+    this.addItems(el, c.strokes, c.images);
   }
-  styleSelection(color) {
-    if (!this.sel || !color) return;
-    const items = this.sel.strokes.map((st) => ({ id: st.id, from: st.color, to: color }));
-    for (const st of this.sel.strokes) st.color = color;
+  styleSelection(penColor, hlColor) {
+    if (!this.sel || !this.sel.strokes.length) return;
+    const items = this.sel.strokes.map((st) => ({ stroke: st, from: st.color, to: st.tool === 'hl' ? (hlColor || st.color) : penColor }));
+    for (const it of items) it.stroke.color = it.to;
     this.push({ t: 'recolor', pageId: this.sel.el._page.id, items });
-    this.redrawInk(this.sel.el);
+    this.redraw(this.sel.el);
+  }
+  // rotate the selected photos a quarter turn clockwise about their centres (the pixels are rotated, so exports match)
+  async rotateSelection() {
+    const S = this.sel;
+    if (!S || !S.images.length) return;
+    const assets = this.doc.body.assets || (this.doc.body.assets = {});
+    const before = this.snapshot();
+    for (const m of S.images) {
+      const url = await rotateDataUrl(assets[m.src]);
+      if (!url || this.sel !== S) return;
+      const key = uid();
+      assets[key] = url;
+      const cx = m.x + m.w / 2, cy = m.y + m.h / 2;
+      Object.assign(m, { src: key, w: m.h, h: m.w, x: cx - m.h / 2, y: cy - m.w / 2 });
+    }
+    this.push({ t: 'xform', pageId: S.el._page.id, strokes: S.strokes.slice(), images: S.images.slice(), before, after: this.snapshot() });
+    this.redraw(S.el);
+    this.fitSel();
+    this.emitSel();
+  }
+
+  /* photos: list = [{url, w, h}] (already downscaled JPEG data URLs, w/h in pixels) */
+  insertImages(list) {
+    if (!this.doc || !list.length) return;
+    const el = this.pageEls[this.currentIndex] || this.pageEls[0];
+    const p = el._page, v = this.visibleRect(el);
+    const body = this.doc.body, assets = body.assets || (body.assets = {});
+    const images = list.map((it, i) => {
+      const maxW = Math.min(p.w * 0.7, v.w * 0.8), maxH = Math.min(p.h * 0.7, v.h * 0.8);
+      const s = Math.min(maxW / it.w, maxH / it.h);
+      const w = Math.round(it.w * s), h = Math.round(it.h * s);
+      const off = i * 24;
+      const key = uid();
+      assets[key] = it.url;
+      return { id: uid(), src: key, x: Math.round(Math.max(0, Math.min(p.w - w, v.x + (v.w - w) / 2 + off))), y: Math.round(Math.max(0, Math.min(p.h - h, v.y + (v.h - h) / 2 + off))), w, h };
+    });
+    this.addItems(el, [], images);
   }
 
   onMove(e) {
@@ -443,9 +648,9 @@ export class Editor {
       return;
     }
     if (this.moving && e.pointerId === this.moving.pointerId) {
-      const [x, y] = this.toPage(e, this.sel.el);
-      if (this.moving.handle) this.scaleSel(this.moving.handle, x, y);
-      else { const dx = x - this.moving.last[0], dy = y - this.moving.last[1]; this.nudge(dx, dy, false); this.moving.last = [x, y]; this.moving.dx = (this.moving.dx || 0) + dx; this.moving.dy = (this.moving.dy || 0) + dy; }
+      e.preventDefault();
+      this.moving.next = this.toPage(e, this.sel.el);
+      if (!this._mraf) this._mraf = requestAnimationFrame(() => { this._mraf = 0; if (this.moving && this.moving.next) this.moveTo(...this.moving.next); });
       return;
     }
     if (this.cur && e.pointerId === this.cur.pointerId) {
@@ -459,13 +664,13 @@ export class Editor {
   }
 
   onUp(e, cancelled) {
-    if (this.lasso && (!e || e.pointerId === this.lasso.pointerId)) { this.finishLasso(); return; }
-    if (this.moving && (!e || e.pointerId === this.moving.pointerId)) {
-      if (!this.moving.handle && (this.moving.dx || this.moving.dy)) this.push({ t: 'nudge', pageId: this.sel.el._page.id, ids: this.sel.strokes.map((st) => st.id), dx: this.moving.dx || 0, dy: this.moving.dy || 0 });
-      else if (this.moving.handle) this.push({ t: 'reshape', pageId: this.sel.el._page.id, ids: this.sel.strokes.map((st) => st.id), base: this.moving.base, next: this.sel.strokes.map((st) => st.pts.map((pt) => pt.slice())) });
-      this.moving = null;
-      return;
+    if (this.swallow != null && e.pointerId === this.swallow) { this.swallow = null; return; }
+    if (this.tapOut && e.pointerId === this.tapOut.pointerId) {
+      const T = this.tapOut; this.tapOut = null;
+      if (!cancelled && Math.hypot(e.clientX - T.x, e.clientY - T.y) < 10 && this.sel && !this.moving) this.clearSelection();
     }
+    if (this.lasso && e.pointerId === this.lasso.pointerId) { this.finishLasso(cancelled); return; }
+    if (this.moving && e.pointerId === this.moving.pointerId) { this.endMove(); return; }
     if (this.cur && e.pointerId === this.cur.pointerId) {
       const { el, stroke } = this.cur;
       this.cur = null;
@@ -716,7 +921,10 @@ export class Editor {
   }
 
   /* ---------------- history ---------------- */
+  rev(page) { return this.revs.get(page) || 0; }
+  bump(pageId) { const el = pageId && this.pageElById(pageId); if (el) this.revs.set(el._page, this.rev(el._page) + 1); }
   push(action) {
+    this.bump(action.pageId);
     this.undoStack.push(action);
     if (this.undoStack.length > 300) this.undoStack.shift();
     this.redoStack = [];
@@ -748,34 +956,87 @@ export class Editor {
       case 'paper':
         this.doc.meta.paper = { ...(undo ? a.from : a.to) };
         this.rerenderAll(); break;
-      case 'addMany':
-        if (undo) { for (const st of a.strokes) { const i = strokes.indexOf(st); if (i >= 0) strokes.splice(i, 1); } }
-        else strokes.push(...a.strokes);
-        this.redrawInk(el); break;
-      case 'nudge': {
-        const sign = undo ? -1 : 1;
-        for (const st of strokes) if (a.ids.includes(st.id)) for (const pt of st.pts) { pt[0] += a.dx * sign; pt[1] += a.dy * sign; }
-        this.redrawInk(el); break;
+      case 'addItems':
+        if (undo) {
+          for (const st of a.strokes) { const i = strokes.indexOf(st); if (i >= 0) strokes.splice(i, 1); }
+          const im = el._page.images || [];
+          for (const m of a.images) { const i = im.indexOf(m); if (i >= 0) im.splice(i, 1); }
+        } else {
+          strokes.push(...a.strokes);
+          if (a.images.length) (el._page.images || (el._page.images = [])).push(...a.images);
+        }
+        this.redraw(el); break;
+      case 'removeItems': {
+        const im = el._page.images || (el._page.images = []);
+        if (undo) {
+          [...a.strokes].sort((x, y) => x.index - y.index).forEach(({ stroke, index }) => strokes.splice(Math.min(index, strokes.length), 0, stroke));
+          [...a.images].sort((x, y) => x.index - y.index).forEach(({ image, index }) => im.splice(Math.min(index, im.length), 0, image));
+        } else {
+          for (const { stroke } of a.strokes) { const i = strokes.indexOf(stroke); if (i >= 0) strokes.splice(i, 1); }
+          for (const { image } of a.images) { const i = im.indexOf(image); if (i >= 0) im.splice(i, 1); }
+        }
+        this.redraw(el); break;
       }
-      case 'reshape':
-        strokes.forEach((st) => {
-          const i = a.ids.indexOf(st.id);
-          if (i >= 0) st.pts = (undo ? a.base : a.next)[i].map((pt) => pt.slice());
-        });
-        this.redrawInk(el); break;
+      case 'xform': {
+        const snap = undo ? a.before : a.after;
+        a.strokes.forEach((st, i) => { st.pts = snap.strokes[i].pts; st.size = snap.strokes[i].size; });
+        a.images.forEach((m, i) => Object.assign(m, snap.images[i]));
+        this.redraw(el); break;
+      }
       case 'recolor':
-        for (const it of a.items) { const st = strokes.find((x) => x.id === it.id); if (st) st.color = undo ? it.from : it.to; }
-        this.redrawInk(el); break;
+        for (const it of a.items) it.stroke.color = undo ? it.from : it.to;
+        this.redraw(el); break;
     }
   }
+  busy() { return !!(this.cur || this.erasing || this.lasso || this.moving); }
   undo() {
-    if (this.cur || this.erasing) return;
+    if (this.busy()) return;
     const a = this.undoStack.pop(); if (!a) return;
-    this.apply(a, true); this.redoStack.push(a); this.changed();
+    if (this.sel) this.clearSelection(); // the selection may no longer exist after undo
+    this.apply(a, true); this.bump(a.pageId); this.redoStack.push(a); this.changed();
   }
   redo() {
-    if (this.cur || this.erasing) return;
+    if (this.busy()) return;
     const a = this.redoStack.pop(); if (!a) return;
-    this.apply(a, false); this.undoStack.push(a); this.changed();
+    if (this.sel) this.clearSelection();
+    this.apply(a, false); this.bump(a.pageId); this.undoStack.push(a); this.changed();
   }
+}
+
+/* ---------------- helpers ---------------- */
+const inRect = (m, x, y) => x >= m.x && x <= m.x + m.w && y >= m.y && y <= m.y + m.h;
+// A stroke is selected when at least half of it is inside the lasso (a lasso that merely clips the end of a long line
+// doesn't grab it). Dots and two-point strokes need any point inside.
+function strokeInside(st, inside) {
+  const pts = st.pts;
+  if (pts.length <= 2) return pts.some((p) => inside(p[0], p[1]));
+  let n = 0;
+  for (const p of pts) if (inside(p[0], p[1])) n++;
+  return n >= pts.length / 2;
+}
+// A photo is selected when at least half of it (sampled on a 4x4 grid) is inside the lasso.
+function imageInside(m, inside) {
+  let n = 0;
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) if (inside(m.x + m.w * (i + 0.5) / 4, m.y + m.h * (j + 0.5) / 4)) n++;
+  return n >= 8;
+}
+// Drop stored photos no page refers to any more (deleted photos, earlier rotations). Run when a note is opened, when
+// there is no undo history that could still need them.
+export function pruneAssets(body) {
+  if (!body || !body.assets) return;
+  const used = new Set();
+  for (const p of body.pages) for (const m of p.images || []) used.add(m.src);
+  for (const k of Object.keys(body.assets)) if (!used.has(k)) delete body.assets[k];
+}
+async function rotateDataUrl(url) {
+  const im = await loadImage(url);
+  if (!im) return null;
+  const c = document.createElement('canvas');
+  c.width = im.naturalHeight; c.height = im.naturalWidth;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width, 0); ctx.rotate(Math.PI / 2);
+  ctx.drawImage(im, 0, 0);
+  const out = c.toDataURL('image/jpeg', 0.88);
+  c.width = c.height = 0;
+  return out;
 }

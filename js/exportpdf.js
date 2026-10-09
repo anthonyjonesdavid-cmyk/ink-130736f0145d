@@ -1,6 +1,6 @@
 // Flatten a note (paper pages and/or original PDF pages + ink) into a new PDF using pdf-lib.
 // Ink is written as vector paths, so it stays crisp at any zoom.
-import { PDFDocument, rgb, BlendMode } from '../vendor/pdf-lib.esm.min.js';
+import { PDFDocument, rgb, BlendMode, degrees } from '../vendor/pdf-lib.esm.min.js';
 import { paperGeometry, paperInk, paperDot, isDark, hexToRgb, strokeOutline, outlineToPath, HL_ALPHA, loadGrain, drawGrain } from './render.js';
 
 // Paper colour + grain as a raster (JPEG) page background, so exports match the screen. Ruling and ink stay vector on top.
@@ -17,6 +17,20 @@ async function grainBackground(out, paper, w, h, cache) {
   const bytes = await (await fetch(c.toDataURL('image/jpeg', 0.86))).arrayBuffer();
   c.width = c.height = 0;
   const img = await out.embedJpg(bytes);
+  cache.set(key, img);
+  return img;
+}
+
+async function embedPhoto(out, assets, key, cache) {
+  if (cache.has(key)) return cache.get(key);
+  let img = null;
+  const url = assets && assets[key];
+  if (url) {
+    try {
+      const bytes = await (await fetch(url)).arrayBuffer();
+      img = /^data:image\/png/.test(url) ? await out.embedPng(bytes) : await out.embedJpg(bytes);
+    } catch (e) { console.warn('photo export', e); }
+  }
   cache.set(key, img);
   return img;
 }
@@ -38,7 +52,7 @@ export async function exportNoteAsPdf({ meta, body, pdfBytes, pdfDoc }) {
   }
 
   const paper = meta.paper || { style: 'plain', color: '#ffffff' };
-  const bgCache = new Map();
+  const bgCache = new Map(), photoCache = new Map();
   for (const pg of body.pages) {
     let page, map;
     if (pg.kind === 'pdf' && copied.has(pg.pdfIndex)) {
@@ -69,6 +83,15 @@ export async function exportNoteAsPdf({ meta, body, pdfBytes, pdfDoc }) {
         for (const [x, y] of g.dots) page.drawCircle({ x, y: pg.h - y, size: 1.1, color: dc, opacity: dot.a });
       }
       map = (x, y) => [x, pg.h - y];
+    }
+    // photos: above the page, under the ink. Mapped through the same transform as the ink, so rotated PDF pages work too.
+    for (const im of pg.images || []) {
+      const emb = await embedPhoto(out, body.assets, im.src, photoCache);
+      if (!emb) continue;
+      const [ax, ay] = map(im.x, im.y + im.h);      // bottom-left of the photo
+      const [bx, by] = map(im.x + im.w, im.y + im.h); // bottom-right
+      const [cx, cy] = map(im.x, im.y);             // top-left
+      page.drawImage(emb, { x: ax, y: ay, width: Math.hypot(bx - ax, by - ay), height: Math.hypot(cx - ax, cy - ay), rotate: degrees(Math.atan2(by - ay, bx - ax) * 180 / Math.PI) });
     }
     // drawSvgPath flips y (svg y-down). Feed PDF-space points with y negated.
     const svgMap = (x, y) => { const [X, Y] = map(x, y); return [X, -Y]; };

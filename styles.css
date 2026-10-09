@@ -228,7 +228,9 @@ body.privacy #privacyCover { display: grid; }
 .page:not(.ready)::before { content: ""; position: absolute; inset: 0; background: var(--paper); }
 .layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
 .layer.bg { z-index: 0; }
-.layer.hl { z-index: 1; }
+.layer.imgs { z-index: 1; overflow: hidden; }
+.layer.imgs img { position: absolute; display: block; max-width: none; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; -webkit-touch-callout: none; pointer-events: none; }
+.layer.hl { z-index: 2; }
 .layer.ink { z-index: 3; }
 .pillbar { background: var(--pill-bg);
   border: 1px solid var(--pill-line); box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 4px 14px rgba(0,0,0,.10); border-radius: 18px; color: var(--pill-fg); }
@@ -484,7 +486,7 @@ body.privacy #privacyCover { display: grid; }
 .pen-color-row .btn.sm { height: 32px; padding: 0 10px; font-size: 13px; }
 .pen-add { width: 100%; margin-top: 4px; }
 
-.lasso-mode { height: 32px; padding: 0 12px; border-radius: 16px; font-size: 14px; font-weight: 650; color: var(--pill-fg); }
+.lasso-mode { height: 40px; padding: 0 12px; border-radius: 16px; font-size: 14px; font-weight: 650; color: var(--pill-fg); }
 .lasso-mode.on { background: var(--pill-sel); box-shadow: 0 0 0 1.5px var(--accent); }
 .color-pop { padding: 12px; }
 .color-pop-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 15px; }
@@ -494,9 +496,35 @@ body.privacy #privacyCover { display: grid; }
 .pal-wheel { width: 26px; height: 26px; border-radius: 50%; background: conic-gradient(#f44, #fd4, #4d6, #4cf, #64f, #f4c, #f44); }
 .pal-actions { display: flex; gap: 8px; margin-top: 12px; }
 .pal-actions .btn { flex: 1; }
-.sel-box { position: absolute; z-index: 7; border: 1.5px dashed #2f6bff; border-radius: 4px; pointer-events: none; }
-.sel-box::before, .sel-box::after { content: ""; position: absolute; width: 10px; height: 10px; border-radius: 50%; background: #2f6bff; }
-.sel-box::before { left: -5px; top: -5px; box-shadow: calc(100% + 0px) 0 0 #2f6bff; }
-.lasso-menu { position: absolute; z-index: 12; left: 50%; bottom: calc(var(--sab) + 18px); transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; }
-.lasso-menu button { height: 34px; padding: 0 12px; border-radius: 10px; color: var(--pill-fg); font-size: 14px; font-weight: 650; }
+/* lasso selection: dashed box with four round corner handles. The box itself takes touches (touch-action: none) so a
+   finger can drag the selection instead of scrolling the page; each handle has a 44px invisible target. */
+.sel-box { position: absolute; z-index: 7; border: 1.5px dashed #2f6bff; border-radius: 3px; background: rgba(47,107,255,.05); touch-action: none; pointer-events: auto; }
+.sel-box.active { background: rgba(47,107,255,.09); }
+.sel-h { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; border: 2px solid #2f6bff; box-sizing: border-box; touch-action: none; }
+.sel-h::after { content: ""; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%); }
+.sel-h.nw { left: 0; top: 0; } .sel-h.ne { left: 100%; top: 0; } .sel-h.sw { left: 0; top: 100%; } .sel-h.se { left: 100%; top: 100%; }
+.lasso-menu { position: absolute; z-index: 12; left: 50%; bottom: calc(var(--sab) + 16px); transform: translateX(-50%); display: flex; gap: 2px; padding: 3px; max-width: calc(100vw - 20px); }
+.lasso-menu button { height: 40px; min-width: 44px; padding: 0 12px; border-radius: 12px; color: var(--pill-fg); font-size: 14px; font-weight: 650; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.lasso-menu button .ic { width: 19px; height: 19px; flex: none; }
+.lasso-menu button:active:not(:disabled) { background: var(--pill-sel); }
+.lasso-menu button[data-act="delete"] { color: #ff453a; }
 .lasso-menu button:disabled { opacity: .35; }
+@media (max-width: 760px) {
+  .lasso-menu { bottom: calc(var(--sab) + 52px); }
+  .lasso-menu button { padding: 0; width: 44px; }
+  .lasso-menu button span { display: none; }
+}
+/* narrow screens (iPhone, iPad portrait split view): the tool pill gets its own row under the back / action pills */
+@media (max-width: 900px) {
+  .float.tc { top: 62px; left: calc(var(--sal) + 10px); right: calc(var(--sar) + 10px); transform: none; max-width: none; align-items: stretch; }
+  .float.tc .pill-row { justify-content: flex-start; }
+}
+@media (max-width: 500px) {
+  .seg button { width: 40px; }
+  #fingerBtn { display: none; } /* also in the ••• menu */
+}
+
+.whatsnew summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; list-style: none; }
+.whatsnew summary::-webkit-details-marker { display: none; }
+.whatsnew ul { margin: 4px 0 10px; padding-left: 18px; }
+.whatsnew li { margin: 4px 0; font-size: 14px; line-height: 1.4; }

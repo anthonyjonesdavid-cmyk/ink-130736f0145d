@@ -179,11 +179,15 @@ export function outlineToPath(pts, map = null) {
   return d + 'Z';
 }
 
+// Cached outline per stroke. The cache is only valid for the exact points array and size it was built from, so a stroke
+// that was moved or resized (the lasso gives it a new pts array / size) is re-outlined instead of drawn at its old place.
 const pathCache = new WeakMap();
 export function strokePath2D(st) {
-  let p = pathCache.get(st);
-  if (!p) { p = new Path2D(outlineToPath(strokeOutline(st))); pathCache.set(st, p); }
-  return p;
+  const c = pathCache.get(st);
+  if (c && c.pts === st.pts && c.n === st.pts.length && c.size === st.size) return c.path;
+  const path = new Path2D(outlineToPath(strokeOutline(st)));
+  pathCache.set(st, { pts: st.pts, n: st.pts.length, size: st.size, path });
+  return path;
 }
 
 export function drawStroke(ctx, st, path, hlAlpha = HL_ALPHA) {
@@ -197,13 +201,16 @@ export function drawStrokes(ctx, strokes, tool, hlAlpha = HL_ALPHA) {
   for (const st of strokes) if (st.tool === tool) drawStroke(ctx, st, null, hlAlpha);
 }
 
+const boundsCache = new WeakMap();
 export function strokeBounds(st) {
-  if (st._b) return st._b;
+  const c = boundsCache.get(st);
+  if (c && c.pts === st.pts && c.n === st.pts.length && c.size === st.size) return c.b;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [x, y] of st.pts) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
   const pad = st.size;
-  Object.defineProperty(st, '_b', { value: [x0 - pad, y0 - pad, x1 + pad, y1 + pad], enumerable: false, configurable: true });
-  return st._b;
+  const b = [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
+  boundsCache.set(st, { pts: st.pts, n: st.pts.length, size: st.size, b });
+  return b;
 }
 
 function distSeg(px, py, ax, ay, bx, by) {
@@ -235,7 +242,28 @@ export function hlAlpha(page, paper) {
 }
 
 /* ---------- full page render (thumbnails, library previews) ---------- */
-export async function renderPageInto(canvas, page, paper, pdfDoc, pxPerUnit) {
+/* ---------- photos ----------
+   page.images = [{id, src, x, y, w, h}] in page units; src is a key into body.assets = {key: 'data:image/jpeg;base64,…'}.
+   Photos sit above the paper / PDF page and under all ink. */
+const imgCache = new Map(); // data URL -> Promise<HTMLImageElement>
+export function loadImage(url) {
+  if (!url) return Promise.resolve(null);
+  let p = imgCache.get(url);
+  if (!p) {
+    p = new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = url; });
+    imgCache.set(url, p);
+    if (imgCache.size > 40) imgCache.delete(imgCache.keys().next().value);
+  }
+  return p;
+}
+export async function drawImages(ctx, page, assets) {
+  for (const im of page.images || []) {
+    const pic = await loadImage(assets && assets[im.src]);
+    if (pic) ctx.drawImage(pic, im.x, im.y, im.w, im.h);
+  }
+}
+
+export async function renderPageInto(canvas, page, paper, pdfDoc, pxPerUnit, assets) {
   const W = Math.max(1, Math.round(page.w * pxPerUnit)), H = Math.max(1, Math.round(page.h * pxPerUnit));
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -251,6 +279,7 @@ export async function renderPageInto(canvas, page, paper, pdfDoc, pxPerUnit) {
     drawPaper(ctx, page.w, page.h, paper, pxPerUnit);
   }
   ctx.setTransform(pxPerUnit, 0, 0, pxPerUnit, 0, 0);
+  if (page.images && page.images.length) await drawImages(ctx, page, assets);
   ctx.globalCompositeOperation = hlBlend(page, paper);
   drawStrokes(ctx, page.strokes, 'hl', hlAlpha(page, paper));
   ctx.globalCompositeOperation = 'source-over';

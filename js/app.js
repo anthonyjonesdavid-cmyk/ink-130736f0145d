@@ -76,6 +76,8 @@ const editor = new Editor({
   onHistoryChange: (u, r) => { $('#undoBtn').disabled = !u; $('#redoBtn').disabled = !r; },
   onSelection: (info) => showLassoMenu(info),
 });
+// new photos / pasted ink land in the part of the page that isn't under the floating toolbars
+editor.topInset = () => $('#toolPill').getBoundingClientRect().bottom - $('#docScroll').getBoundingClientRect().top + 8;
 window.__inkwell = { editor, store, settings, drive: { importRemote: (...a) => driveImportRemote(...a), test: driveTest } }; // handy for debugging / tests
 
 /* ---------------- saving ---------------- */
@@ -101,7 +103,7 @@ async function makeThumb(meta, body, pdfDoc) {
   const p = body.pages[0];
   if (!p) return null;
   const c = document.createElement('canvas');
-  await renderPageInto(c, p, meta.paper, pdfDoc, 300 / p.w);
+  await renderPageInto(c, p, meta.paper, pdfDoc, 300 / p.w, body.assets);
   const url = c.toDataURL('image/jpeg', 0.8);
   c.width = c.height = 0;
   return url;
@@ -698,6 +700,7 @@ async function closeDoc({ fast = false } = {}) {
   thumbStale = false;
   await flushSave();
   editor.close();
+  document.querySelector('.lasso-menu')?.remove();
   try { d.pdfDoc?.destroy(); } catch {}
   current = null;
   $('#editor').classList.add('hidden');
@@ -772,6 +775,7 @@ $('#toolSeg').addEventListener('click', (e) => {
   settings.tool = b.dataset.tool;
   if (settings.tool !== 'lasso') editor.clearSelection();
   saveSettings(); updateToolbar();
+  if (settings.tool === 'lasso' && !editor.sel) showLassoMenu(null);
 });
 const PEN_PALETTE = ['#ffe14a','#ff9f1a','#ff3b30','#ff2d8a','#c6ff4a','#34c759','#5ac8fa','#bf5af2','#248a3d','#007aff','#1d4ed8','#5e5ce6','#ffffff','#aeaeb2','#1c1c1e','#a47148'];
 function openPenPalette(anchor, index) {
@@ -796,20 +800,71 @@ function openPenPalette(anchor, index) {
     }
   });
 }
+// Selection actions (bottom bar). With nothing selected but something copied, the lasso tool shows just Paste.
 function showLassoMenu(info) {
   document.querySelector('.lasso-menu')?.remove();
-  if (!info) return;
-  const bar = h(`<div class="lasso-menu pillbar"><button type="button" data-act="style">Style</button><button type="button" data-act="duplicate">Duplicate</button><button type="button" data-act="cut">Cut</button><button type="button" data-act="copy">Copy</button><button type="button" data-act="paste" ${editor.clip.length ? '' : 'disabled'}>Paste</button></div>`);
+  if (!current) return;
+  if (!info && !(settings.tool === 'lasso' && editor.hasClip())) return;
+  const btn = (act, ic, label, extra = '') => `<button type="button" data-act="${act}" aria-label="${label}" ${extra}>${icon(ic)}<span>${label}</span></button>`;
+  const items = info
+    ? [btn('delete', 'trash', 'Delete'), btn('duplicate', 'duplicate', 'Duplicate'), btn('cut', 'cut', 'Cut'), btn('copy', 'copy', 'Copy'),
+      btn('paste', 'paste', 'Paste', editor.hasClip() ? '' : 'disabled'),
+      info.strokes ? btn('style', 'palette', 'Colour') : '', info.images ? btn('rotate', 'rotate', 'Rotate') : '']
+    : [btn('paste', 'paste', 'Paste')];
+  const bar = h(`<div class="lasso-menu pillbar">${items.join('')}</div>`);
   $('#editor').appendChild(bar);
   bar.addEventListener('click', (ev) => {
     const act = ev.target.closest('[data-act]')?.dataset.act;
-    if (act === 'style') { editor.styleSelection(settings.pen.color); toast('Restyled with the current pen colour'); }
+    if (act === 'delete') editor.deleteSelection();
+    if (act === 'style') { editor.styleSelection(settings.pen.color, settings.hl.color); toast('Recoloured with the current pen colour'); }
     if (act === 'duplicate') editor.duplicateSelection();
-    if (act === 'cut') editor.cutSelection();
+    if (act === 'cut') { editor.cutSelection(); toast('Cut — tap Paste to put it back anywhere'); }
     if (act === 'copy') { editor.copySelection(); toast('Copied'); }
     if (act === 'paste') editor.pasteSelection();
+    if (act === 'rotate') editor.rotateSelection();
   });
 }
+
+/* ---------------- photos ---------------- */
+// Photos are downscaled to at most 2048 px on the long side and stored as JPEG inside the note (so they are part of
+// backups, PDF exports, and the encryption of locked folders).
+const PHOTO_MAX = 2048;
+async function photoToJpeg(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const im = new Image();
+    im.decoding = 'async';
+    await new Promise((res, rej) => { im.onload = res; im.onerror = () => rej(new Error('not an image')); im.src = url; });
+    const w0 = im.naturalWidth, h0 = im.naturalHeight;
+    if (!w0 || !h0) throw new Error('empty image');
+    const k = Math.min(1, PHOTO_MAX / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h); // transparent PNGs get a white background in JPEG
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(im, 0, 0, w, h);
+    const out = c.toDataURL('image/jpeg', 0.85);
+    c.width = c.height = 0;
+    return { url: out, w, h };
+  } finally { URL.revokeObjectURL(url); }
+}
+$('#photoBtn').addEventListener('click', () => { closePopover(); $('#photoInput').click(); });
+$('#photoInput').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length || !current) return;
+  if (files.length > 1) toast(`Adding ${files.length} photos…`, 8000);
+  const list = [];
+  for (const f of files) {
+    try { list.push(await photoToJpeg(f)); } catch (err) { console.warn(err); toast(`Couldn’t read “${f.name}”`, 3000); }
+  }
+  if (!list.length || !current) return;
+  editor.insertImages(list);
+  toast(list.length === 1 ? 'Photo added — drag to move, corners to resize' : `${list.length} photos added`);
+});
+
 $('#swatches').addEventListener('click', (e) => {
   const b = e.target.closest('[data-pen-i]');
   if (b && settings.tool === 'pen') { setToolColor(b.dataset.color); openPenPalette(b, +b.dataset.penI); return; }
@@ -955,6 +1010,13 @@ $('#shareBtn').addEventListener('click', () => exportCurrentPdf());
 document.addEventListener('keydown', (e) => {
   if (!current || e.target.closest('input,textarea')) return;
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? editor.redo() : editor.undo(); }
+  // hardware keyboard: delete / copy / cut / paste / duplicate the lasso selection
+  const k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey;
+  if (editor.sel && (e.key === 'Backspace' || e.key === 'Delete')) { e.preventDefault(); editor.deleteSelection(); }
+  else if (mod && k === 'c' && editor.sel) { e.preventDefault(); editor.copySelection(); toast('Copied'); }
+  else if (mod && k === 'x' && editor.sel) { e.preventDefault(); editor.cutSelection(); }
+  else if (mod && k === 'v' && editor.hasClip()) { e.preventDefault(); editor.pasteSelection(); }
+  else if (mod && k === 'd' && editor.sel) { e.preventDefault(); editor.duplicateSelection(); }
 });
 
 /* ---------------- paper picker ---------------- */
@@ -1019,11 +1081,11 @@ async function refreshThumbs(full = false) {
     items[i].classList.toggle('current', i === editor.currentIndex);
     const c = $('canvas', items[i]);
     const p = pages[i];
-    const v = p.strokes.length + ':' + p.strokes.map((s) => s.id.slice(0, 4)).join('').length + ':' + current.meta.paper.style + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + p.id;
+    const v = p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + current.meta.paper.style + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + p.id;
     if (c._v === v && !full) continue;
     c._v = v;
     const tmp = document.createElement('canvas');
-    await renderPageInto(tmp, p, current.meta.paper, current.pdfDoc, (128 * 2) / p.w);
+    await renderPageInto(tmp, p, current.meta.paper, current.pdfDoc, (128 * 2) / p.w, current.body.assets);
     if (!current) return;
     c.width = tmp.width; c.height = tmp.height;
     c.getContext('2d').drawImage(tmp, 0, 0);
@@ -1122,6 +1184,18 @@ async function requestPersist() {
 }
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
+// in-app change log (full history in CHANGELOG.md)
+const APP_VERSION = '2026.10.09';
+const CHANGES = [
+  ['2026.10.09', [
+    'Photos: the new photo button adds pictures from Photos, the camera or Files. Drag to move, drag a corner to resize, Rotate, Delete. Write on top of them.',
+    'Photos are saved inside the note: they come along in backups and PDF exports, and are encrypted in locked folders.',
+    'Lasso: moved or resized ink now really moves on the page (it used to stay drawn in the old place until you reopened the note).',
+    'Lasso: four corner handles that are easy to grab, resize keeps proportions, Delete button, Paste still available after Cut, undo clears the selection box.',
+    'Lasso: a loop has to hold most of a stroke to pick it up; a tap selects one stroke or photo; the box stays in place when you zoom.',
+    'Toolbar fits on iPhone and iPad portrait.',
+  ]],
+];
 $('#settingsBtn').addEventListener('click', openSettings);
 async function openSettings() {
   const s = await storageStatus();
@@ -1140,6 +1214,9 @@ async function openSettings() {
       <p>Save everything to a single file (Files, iCloud Drive, AirDrop…). Encrypted folders stay encrypted inside the backup — you’ll need their passwords after restoring.</p>
       <div class="row"><button class="btn primary" id="sExport">${icon('download')} Export backup</button><button class="btn secondary" id="sImport">${icon('upload')} Import backup</button></div>
     </div>
+    <details class="set-group whatsnew"><summary class="set-title">What’s new · ${APP_VERSION}</summary>
+      ${CHANGES.map(([v, items]) => `<p><b>${v}</b></p><ul>${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`).join('')}
+    </details>
     <p class="fine">Inkwell works offline. Nothing is uploaded anywhere.</p>
   </div>`);
   $('#sFinger', body).addEventListener('change', (e) => { settings.fingerDraw = e.target.checked; saveSettings(); updateToolbar(); });
