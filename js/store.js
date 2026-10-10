@@ -133,6 +133,7 @@ export async function loadPdf(id) {
 
 export async function saveDoc(doc, { pdfBytes } = {}) {
   const key = await folderKey(doc.folderId);
+  if (doc.body && doc.meta) doc.meta.recCount = (doc.body.recordings || []).length; // library audio badge
   const ops = [
     { store: 'docs', put: await sealJSON(key, 'meta', doc.id, doc.folderId, doc.meta) },
     { store: 'content', put: await sealJSON(key, 'body', doc.id, doc.folderId, doc.body) },

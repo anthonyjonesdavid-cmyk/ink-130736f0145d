@@ -3,6 +3,7 @@ import {
   drawPaper, drawStroke, drawStrokes, strokePath2D, strokeOutline, outlineToPath, strokeHit, strokeBounds, hlBlend, hlAlpha, loadImage,
 } from './render.js';
 import { uid } from './store.js';
+import { pageViewport } from './trim.js';
 
 const MAX_CANVAS_PX = 4_500_000; // per canvas; iOS Safari has a tight total canvas memory budget
 const MIN_ZOOM = 0.5, MAX_ZOOM = 5;
@@ -119,7 +120,7 @@ export class Editor {
       const token = (el._token = {});
       this.doc.pdfDoc.getPage(p.pdfIndex + 1).then((pg) => {
         if (el._token !== token) return;
-        const vp = pg.getViewport({ scale: k });
+        const vp = pageViewport(pg, p, k);
         el._task = pg.render({ canvasContext: tctx, viewport: vp });
         return el._task.promise.then(() => {
           if (el._token !== token) return;

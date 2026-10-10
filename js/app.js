@@ -6,6 +6,7 @@ import { $, $$, esc, h, toast, modal, promptText, confirmDialog, popover, closeP
 import { createPinPad } from './pin.js';
 import * as throttle from './throttle.js';
 import * as audio from './audio.js';
+import { trimBody, setTrim, isTrimmed } from './trim.js';
 import * as backup from './backup.js';
 import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest } from './drive.js';
 import {
@@ -112,6 +113,66 @@ async function makeThumb(meta, body, pdfDoc) {
 }
 
 /* ---------------- library ---------------- */
+// sort / filter: remembered on this device, same for every folder
+const VIEW_KEY = 'inkwell.libView';
+const SORTS = [['name-az', 'Name (A–Z)'], ['name-za', 'Name (Z–A)'], ['added-new', 'Date added (newest)'], ['added-old', 'Date added (oldest)'], ['mod-new', 'Date modified (newest)'], ['mod-old', 'Date modified (oldest)']];
+let libView = (() => { try { const v = JSON.parse(localStorage.getItem(VIEW_KEY)); if (v && SORTS.some(([k]) => k === v.sort)) return v; } catch {} return { sort: 'mod-new', audio: false }; })();
+let docsById = new Map();
+const setLibView = (patch) => { libView = { ...libView, ...patch }; try { localStorage.setItem(VIEW_KEY, JSON.stringify(libView)); } catch {} renderLibrary(); };
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+function sortDocs(docs) {
+  const by = {
+    'name-az': (a, b) => collator.compare(a.title || '', b.title || ''),
+    'name-za': (a, b) => collator.compare(b.title || '', a.title || ''),
+    'added-new': (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+    'added-old': (a, b) => (a.createdAt || 0) - (b.createdAt || 0),
+    'mod-new': (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0),
+    'mod-old': (a, b) => (a.updatedAt || 0) - (b.updatedAt || 0),
+  }[libView.sort];
+  return docs.slice().sort((a, b) => by(a, b) || collator.compare(a.title || '', b.title || ''));
+}
+function libMenu(anchor) {
+  const pdfs = [...docsById.values()].filter((d) => d.kind === 'pdf');
+  popover(anchor, [
+    { head: 'Sort by' },
+    ...SORTS.map(([k, label]) => ({ label, id: 'sort-' + k, checked: libView.sort === k, onClick: () => setLibView({ sort: k }) })),
+    '-',
+    { head: 'Filter' },
+    { label: 'Has audio', icon: 'mic', id: 'filter-audio', checked: !!libView.audio, onClick: () => setLibView({ audio: !libView.audio }) },
+    '-',
+    ...(pdfs.length ? [{ label: 'Trim white borders on PDFs', icon: 'crop', id: 'trimAll', onClick: () => trimAll(pdfs.map((d) => d.id)) }] : []),
+    { label: 'Settings…', icon: 'settings', id: 'openSettings', onClick: openSettings },
+  ], { width: 290 });
+}
+
+// white-border trim (js/trim.js): non-destructive, per note; ink/photos are shifted with the page so they stay aligned
+async function trimDoc(id, on, { quiet = false } = {}) {
+  const d = await store.loadDoc(id);
+  if (d.meta.kind !== 'pdf') return 0;
+  const bytes = await store.loadPdf(id);
+  if (!bytes) return 0;
+  const pdfDoc = await openPdf(bytes);
+  let n = 0;
+  try {
+    if (on) n = await trimBody(d.body, pdfDoc);
+    else for (const p of d.body.pages) if (setTrim(p, false)) n++;
+    d.meta.trimChecked = true;
+    d.meta.trimmed = isTrimmed(d.body);
+    if (n) d.meta.thumb = await makeThumb(d.meta, d.body, pdfDoc);
+    await store.saveDoc(d);
+  } finally { pdfDoc.destroy(); }
+  if (!quiet) toast(n ? (on ? `Trimmed white borders on ${n} page${n > 1 ? 's' : ''}` : 'White borders restored') : on ? 'No white borders found on this PDF' : 'Nothing to restore');
+  return n;
+}
+async function trimAll(ids) {
+  let notes = 0, pages = 0, i = 0;
+  for (const id of ids) {
+    i++; toast(`Checking PDFs for white borders… ${i} / ${ids.length}`, 60000);
+    try { const n = await trimDoc(id, true, { quiet: true }); if (n) { notes++; pages += n; } } catch (e) { console.warn('trim', id, e); }
+  }
+  toast(notes ? `Trimmed white borders in ${notes} note${notes > 1 ? 's' : ''} (${pages} pages). Undo per note: ⋯ → Show white borders.` : 'No white borders found', 5000);
+  renderLibrary();
+}
 async function renderLibrary() {
   folders = await store.listFolders();
   if (section && !folders.some((f) => f.id === section)) section = null;
@@ -134,15 +195,22 @@ async function renderLibrary() {
   let docs;
   try { docs = await store.listDocs(section); }
   catch (e) { if (e.locked) { renderLockScreen(f); return; } throw e; }
-  baseSub = `${docs.length} ${docs.length === 1 ? 'note' : 'notes'}${f && f.locked ? ' · encrypted' : ''}`;
+  docsById = new Map(docs.map((d) => [d.id, d]));
+  const total = docs.length;
+  docs = sortDocs(libView.audio ? docs.filter((d) => d.recCount > 0) : docs);
+  baseSub = `${libView.audio ? `${docs.length} of ${total} · with audio` : `${total} ${total === 1 ? 'note' : 'notes'}`}${f && f.locked ? ' · encrypted' : ''}`;
+  $('#settingsBtn').classList.toggle('filtered', !!libView.audio);
   $('#sectionSub').textContent = baseSub;
   body.innerHTML = '';
   const grid = h('<div class="grid"></div>');
   grid.appendChild(h(`<button class="card new-card" id="newCard"><div class="thumb">${icon('plus')}</div><div class="card-info"><div class="card-title">New Note</div><div class="card-meta">Blank notebook</div></div></button>`));
   for (const d of docs) {
+    const badges = (d.kind === 'pdf' ? '<span class="badge">PDF</span>' : '')
+      + (d.recCount ? `<span class="badge audio" title="${d.recCount} recording${d.recCount > 1 ? 's' : ''}">${icon('mic')}${d.recCount > 1 ? d.recCount : ''}</span>` : '');
+    const when = libView.sort.startsWith('added') ? (d.createdAt || d.updatedAt) : d.updatedAt;
     const card = h(`<div class="card" data-id="${d.id}">
-      <button class="card-open" aria-label="Open ${esc(d.title)}"><div class="thumb ${d.thumb ? '' : 'empty'}">${d.thumb ? `<img src="${d.thumb}" alt="">` : icon(d.kind === 'pdf' ? 'pdf' : 'notes')}${d.kind === 'pdf' ? '<span class="badge">PDF</span>' : ''}</div></button>
-      <div class="card-info"><div class="card-title">${esc(d.title)}</div><div class="card-meta">${fmtDate(d.updatedAt)} · ${d.pageCount || 1} ${d.pageCount === 1 ? 'page' : 'pages'}</div></div>
+      <button class="card-open" aria-label="Open ${esc(d.title)}"><div class="thumb ${d.thumb ? '' : 'empty'}">${d.thumb ? `<img src="${d.thumb}" alt="">` : icon(d.kind === 'pdf' ? 'pdf' : 'notes')}${badges ? `<span class="badges">${badges}</span>` : ''}</div></button>
+      <div class="card-info"><div class="card-title">${esc(d.title)}</div><div class="card-meta">${fmtDate(when)} · ${d.pageCount || 1} ${d.pageCount === 1 ? 'page' : 'pages'}</div></div>
       <button class="card-more icon-btn sm" aria-label="More">${icon('more')}</button>
       <span class="sel-mark" aria-hidden="true">${icon('check')}</span>
     </div>`);
@@ -153,7 +221,8 @@ async function renderLibrary() {
   shownIds = docs.map((d) => d.id);
   for (const id of [...selected]) if (!shownIds.includes(id)) selected.delete(id);
   syncSelect();
-  if (!docs.length) body.appendChild(h(`<div class="empty-hint">${icon('pen')}<p>${f ? 'This folder is empty.' : 'No notes yet.'} Create a notebook or import a PDF to start writing with Apple Pencil.</p></div>`));
+  if (!docs.length && libView.audio && total) body.appendChild(h(`<div class="empty-hint">${icon('mic')}<p>No notes with audio here. Turn off the “Has audio” filter in the ${icon('settings')} menu to see all notes.</p></div>`));
+  else if (!docs.length) body.appendChild(h(`<div class="empty-hint">${icon('pen')}<p>${f ? 'This folder is empty.' : 'No notes yet.'} Create a notebook or import a PDF to start writing with Apple Pencil.</p></div>`));
 }
 
 function renderLockScreen(f) {
@@ -276,6 +345,9 @@ function docMenu(anchor, id) {
     { label: 'Rename', icon: 'edit', onClick: () => renameDoc(id) },
     { label: 'Move to…', icon: 'move', onClick: () => moveDoc(id) },
     { label: 'Export as PDF', icon: 'download', onClick: () => exportPdfById(id) },
+    ...(docsById.get(id)?.kind === 'pdf' ? [docsById.get(id).trimmed
+      ? { label: 'Show white borders', icon: 'crop', id: 'trimToggle', onClick: () => trimDoc(id, false).then(renderLibrary) }
+      : { label: 'Trim white borders', icon: 'crop', id: 'trimToggle', onClick: () => trimDoc(id, true).then(renderLibrary) }] : []),
     '-',
     { label: 'Delete', icon: 'trash', danger: true, onClick: () => deleteDoc(id) },
   ]);
@@ -639,6 +711,8 @@ async function importPdf(bytes, name, folderId, driveId) {
       body: { pages: sizes.map((s, i) => ({ id: store.uid(), kind: 'pdf', pdfIndex: i, w: s.w, h: s.h, strokes: [] })) },
     };
     if (driveId) doc.meta.driveId = driveId; // lets Drive imports spot files already imported
+    try { await trimBody(doc.body, pdfDoc); } catch (e) { console.warn('trim on import', e); } // scans with a white sheet around the page
+    doc.meta.trimChecked = true; doc.meta.trimmed = isTrimmed(doc.body);
     doc.meta.thumb = await makeThumb(doc.meta, doc.body, pdfDoc);
     await store.saveDoc(doc, { pdfBytes: bytes });
     return doc.id;
@@ -1198,8 +1272,13 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10';
+const APP_VERSION = '2026.10.10b';
 const CHANGES = [
+  ['2026.10.10b', [
+    'Sort notes: the sliders button (top right) now has Name A–Z / Z–A, Date added and Date modified. Remembered on this iPad, same in every folder.',
+    'Notes with audio show a small mic badge (with the number of recordings), and the same menu has a “Has audio” filter. Settings… moved into that menu.',
+    'White borders on imported scans: Inkwell trims the white sheet around the page when you import. For PDFs you already have, use sliders → “Trim white borders on PDFs”, or ⋯ on a note. Your ink stays on the same spot, the original PDF is kept, and ⋯ → “Show white borders” undoes it.',
+  ]],
   ['2026.10.10', [
     'Audio recording: tap the microphone in a note to record. Everything you write while recording is synced to the audio.',
     'Playback bar: play, pause, scrub and jump back 15 s. Ink written later than the playhead is dimmed; tap any stroke to hear what was said when you wrote it.',
@@ -1215,7 +1294,7 @@ const CHANGES = [
     'Toolbar fits on iPhone and iPad portrait.',
   ]],
 ];
-$('#settingsBtn').addEventListener('click', openSettings);
+$('#settingsBtn').addEventListener('click', (e) => libMenu(e.currentTarget));
 async function openSettings() {
   const s = await storageStatus();
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;

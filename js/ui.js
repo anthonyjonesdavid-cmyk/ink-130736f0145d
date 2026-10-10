@@ -91,7 +91,8 @@ export function popover(anchor, content, { align = 'end', width } = {}) {
     const list = h('<div class="menu"></div>');
     for (const it of content) {
       if (it === '-') { list.appendChild(h('<div class="menu-sep"></div>')); continue; }
-      const b = h(`<button class="menu-item ${it.danger ? 'danger' : ''}">${it.icon ? icon(it.icon) : ''}<span>${esc(it.label)}</span>${it.checked != null ? `<span class="menu-check ${it.checked ? 'on' : ''}">${icon('check')}</span>` : ''}</button>`);
+      if (it.head) { list.appendChild(h(`<div class="pop-title menu-head">${esc(it.head)}</div>`)); continue; }
+      const b = h(`<button class="menu-item ${it.danger ? 'danger' : ''}"${it.id ? ` id="${it.id}"` : ''}>${it.icon ? icon(it.icon) : ''}<span>${esc(it.label)}</span>${it.checked != null ? `<span class="menu-check ${it.checked ? 'on' : ''}">${icon('check')}</span>` : ''}</button>`);
       b.addEventListener('click', () => { closePopover(); it.onClick?.(); });
       list.appendChild(b);
     }

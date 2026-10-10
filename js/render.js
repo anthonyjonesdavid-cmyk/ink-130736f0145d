@@ -1,5 +1,6 @@
 // Shared drawing code: paper patterns, pressure strokes (perfect-freehand), PDF page rendering.
 import { getStroke } from '../vendor/perfect-freehand.js';
+import { pageViewport } from './trim.js';
 
 export const PAPER_STYLES = [
   { id: 'plain', name: 'Plain' },
@@ -272,7 +273,7 @@ export async function renderPageInto(canvas, page, paper, pdfDoc, pxPerUnit, ass
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
     try {
       const pg = await pdfDoc.getPage(page.pdfIndex + 1);
-      const vp = pg.getViewport({ scale: pxPerUnit });
+      const vp = pageViewport(pg, page, pxPerUnit);
       await pg.render({ canvasContext: ctx, viewport: vp }).promise;
     } catch (e) { console.warn('thumb render', e); }
   } else {

@@ -65,7 +65,12 @@ export async function exportNoteAsPdf({ meta, body, pdfBytes, pdfDoc }) {
       page = out.addPage(cp);
       // map viewport coords (what the user drew on) to PDF user space, handling /Rotate and offset boxes
       const vp = (await pdfDoc.getPage(pg.pdfIndex + 1)).getViewport({ scale: 1 });
-      map = (x, y) => vp.convertToPdfPoint(x, y);
+      const ox = pg.cropped && pg.trim ? pg.trim.x : 0, oy = pg.cropped && pg.trim ? pg.trim.y : 0;
+      map = (x, y) => vp.convertToPdfPoint(x + ox, y + oy);
+      if (pg.cropped) { // trimmed white border: export with the same crop box (original page content untouched)
+        const [ax, ay] = map(0, 0), [bx, by] = map(pg.w, pg.h);
+        page.setCropBox(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+      }
     } else {
       page = out.addPage([pg.w, pg.h]);
       page.drawRectangle({ x: 0, y: 0, width: pg.w, height: pg.h, color: col(paper.color || '#ffffff') });
