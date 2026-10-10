@@ -56,13 +56,14 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
 
   <!-- ============ EDITOR ============ -->
   <section id="editor" class="view hidden">
-    <div id="docScroll"><div id="pagesWrap"></div></div>
-    <div class="float tl pillbar">
-      <button id="backBtn" class="icon-btn" data-icon="back" aria-label="Back to library"></button>
-      <span id="lockBadge" title="Encrypted folder"></span>
-    </div>
-    <div class="float tc pillbar col" id="toolPill">
-      <div class="pill-row">
+    <header id="edBar" class="ed-bar">
+      <div class="ed-row">
+        <div class="ed-left">
+          <button id="backBtn" class="icon-btn" data-icon="back" aria-label="Back to library"></button>
+          <span id="lockBadge" title="Encrypted folder"></span>
+        </div>
+        <div class="ed-tools" id="toolPill">
+      <div class="pill-row" id="toolRow">
         <div class="seg" id="toolSeg">
           <button data-tool="pen" data-icon="pen" aria-label="Pen"></button>
           <button data-tool="hl" data-icon="hl" aria-label="Highlighter"></button>
@@ -76,13 +77,8 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
         <button id="pagesBtn" class="icon-btn" data-icon="pages" aria-label="Pages"></button>
         <button id="fingerBtn" class="icon-btn toggle" data-icon="hand" aria-label="Draw with finger"></button>
       </div>
-      <div class="pill-row">
-        <div id="swatches" class="swatches"></div>
-        <span class="sep"></span>
-        <div id="sizes" class="sizes"></div>
-      </div>
-    </div>
-    <div class="float tr pillbar" id="actionPill">
+        </div>
+        <div class="ed-right" id="actionPill">
       <button id="recBtn" class="icon-btn" data-icon="mic" aria-label="Record audio"><span class="rec-time"></span></button>
       <button id="playBtn" class="icon-btn" data-icon="waves" aria-label="Recordings" hidden></button>
       <button id="zoomAdjustBtn" class="icon-btn" data-icon="zoom" aria-label="Zoom"></button>
@@ -90,7 +86,19 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
       <button id="redoBtn" class="icon-btn" data-icon="redo" aria-label="Redo" disabled></button>
       <button id="shareBtn" class="icon-btn" data-icon="share" aria-label="Export as PDF"></button>
       <button id="edMoreBtn" class="icon-btn" data-icon="more" aria-label="More"></button>
-    </div>
+        </div>
+      </div>
+      <div class="ed-opts" id="optRow">
+        <div class="pill-row">
+          <div id="swatches" class="swatches"></div>
+          <span class="sep"></span>
+          <div id="sizes" class="sizes"></div>
+          <button id="optsHideBtn" class="icon-btn" data-icon="chevUp" aria-label="Hide pen options"></button>
+        </div>
+      </div>
+    </header>
+    <div id="docScroll"><div id="pagesWrap"></div></div>
+    <button id="barRestore" class="bar-restore" data-icon="chevDown" aria-label="Show toolbar" hidden></button>
     <aside id="thumbs" class="thumbs pillbar hidden"></aside>
     <button id="zoomBtn" class="zoom-pill pillbar hidden" aria-label="Reset zoom">100%</button>
     <div id="pageIndicator" class="page-ind">1 / 1</div>

@@ -326,6 +326,33 @@ export async function finishEncryption(id, onProgress) {
   return done;
 }
 
+/* ---------- remove a folder's lock ----------
+   Decrypts the notes one by one (each note's records switch together, crash-safe via rewriteDoc). The folder keeps its
+   key material with  decrypting: true  until every note is plain; an interrupted run resumes on the next unlock. */
+export async function removeLock(id, onProgress) {
+  const key = keys.get(id);
+  if (!key) throw new LockedError();
+  let f = await db.get('folders', id);
+  if (!f || !f.locked) return 0;
+  if (!f.decrypting) { f.decrypting = true; await db.put('folders', f); }
+  const docs = (await db.getAll('docs')).filter((d) => d.folderId === id);
+  const todo = [];
+  for (const d of docs) {
+    const recs = await Promise.all(KINDS.map(([st]) => db.get(st, d.id)));
+    recs.push(...(await db.getAllBy('audio', 'docId', d.id)));
+    if (recs.some((r) => r && r.enc)) todo.push(d.id);
+  }
+  let done = 0;
+  onProgress?.(0, todo.length);
+  for (const docId of todo) { await rewriteDoc(docId, id, { srcKey: key, dstKey: null }); onProgress?.(++done, todo.length); }
+  f = await db.get('folders', id);
+  for (const k of ['locked', 'decrypting', 'encrypting', 'secretKind', 'kdf', 'iterations', 'salt', 'verifier']) delete f[k];
+  f.locked = false;
+  await db.put('folders', f);
+  keys.delete(id);
+  return done;
+}
+
 /* ---------- batch helpers ---------- */
 // moves one note with keys captured up front (so an auto-relock mid-batch doesn't strand it)
 export async function moveDocWithKeys(id, toFolderId, srcKey, dstKey) {

@@ -83,7 +83,7 @@ const editor = new Editor({
   onSelection: (info) => showLassoMenu(info),
 });
 // new photos / pasted ink land in the part of the page that isn't under the floating toolbars
-editor.topInset = () => $('#toolPill').getBoundingClientRect().bottom - $('#docScroll').getBoundingClientRect().top + 8;
+editor.topInset = () => 8; // the toolbar is docked above the page now: nothing covers it
 window.__inkwell = { editor, store, settings, drive: { importRemote: (...a) => driveImportRemote(...a), test: driveTest } }; // handy for debugging / tests
 
 /* ---------------- saving ---------------- */
@@ -183,7 +183,7 @@ async function renderLibrary() {
   if (section && !folders.some((f) => f.id === section)) section = null;
   const counts = await store.countDocs();
   const nav = $('#folderNav');
-  const item = (id, name, ic, count, extra = '') => `<button class="nav-item ${section === id ? 'active' : ''}" data-section="${id || ''}">${icon(ic)}<span class="nav-name">${esc(name)}</span>${extra}<span class="nav-count">${count || ''}</span></button>`;
+  const item = (id, name, ic, count, extra = '') => `<div class="nav-item ${section === id ? 'active' : ''}" role="button" tabindex="0" data-section="${id || ''}">${icon(ic)}<span class="nav-name">${esc(name)}</span>${extra}<span class="nav-count">${count || ''}</span>${id ? `<button type="button" class="nav-more" aria-label="Folder options">${icon('more')}</button>` : ''}</div>`;
   nav.innerHTML = item(null, 'Notes', 'notes', counts.root)
     + `<div class="nav-label">Folders</div>`
     + (folders.length ? folders.map((f) => item(f.id, f.name, f.locked ? (store.isUnlocked(f.id) ? 'unlock' : 'lock') : 'folder', counts[f.id], f.locked ? '<span class="enc-dot" title="Encrypted"></span>' : '')).join('') : `<div class="nav-empty">No folders yet</div>`);
@@ -332,8 +332,28 @@ $('#navBtn').addEventListener('click', (e) => {
 
 $('#folderNav').addEventListener('click', (e) => {
   const b = e.target.closest('.nav-item');
-  if (b) goSection(b.dataset.section || null);
+  if (!b) return;
+  if (navLong) { navLong = false; return; } // a long-press already opened the menu
+  const more = e.target.closest('.nav-more');
+  if (more) { const f = folders.find((x) => x.id === b.dataset.section); if (f) folderMenu(more, f); return; }
+  goSection(b.dataset.section || null);
 });
+// long-press a folder row -> the same options
+let navLong = false, navTimer = null;
+$('#folderNav').addEventListener('pointerdown', (e) => {
+  navLong = false;
+  const b = e.target.closest('.nav-item[data-section]:not([data-section=""])');
+  if (!b || e.target.closest('.nav-more')) return;
+  const x0 = e.clientX, y0 = e.clientY;
+  navLong = false; clearTimeout(navTimer);
+  navTimer = setTimeout(() => { const f = folders.find((x) => x.id === b.dataset.section); if (f) { navLong = true; folderMenu(b, f); } }, 550);
+  const cancel = (ev) => { if (!ev || ev.type !== 'pointermove' || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) { clearTimeout(navTimer); off(); } };
+  const off = () => { removeEventListener('pointermove', cancel); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
+  const up = () => { clearTimeout(navTimer); off(); if (navLong) setTimeout(() => { navLong = false; }, 400); };
+  addEventListener('pointermove', cancel); addEventListener('pointerup', up); addEventListener('pointercancel', up);
+});
+$('#folderNav').addEventListener('contextmenu', (e) => { if (e.target.closest('.nav-item')) e.preventDefault(); });
+$('#folderNav').addEventListener('keydown', (e) => { const b = e.target.closest('.nav-item'); if (b && e.target === b && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goSection(b.dataset.section || null); } });
 
 $('#libBody').addEventListener('click', (e) => {
   if (e.target.closest('#newCard')) return selecting ? null : newNote();
@@ -582,7 +602,81 @@ async function runEncryption(id, name) {
 }
 async function resumeEncryptionIfNeeded(id) {
   const f = (await store.listFolders()).find((x) => x.id === id);
+  if (f && f.decrypting && store.isUnlocked(id)) { await runDecryption(f); return; }
   if (f && f.encrypting && store.isUnlocked(id)) await runEncryption(id, f.name);
+}
+async function runDecryption(f) {
+  const ps = progressSheet(`Removing the lock from “${f.name}”`);
+  try {
+    const done = await store.removeLock(f.id, (d, t) => ps.set(d, t, t ? `${d} of ${t} ${t === 1 ? 'note' : 'notes'} decrypted` : 'Nothing to decrypt'));
+    ps.set(1, 1, '');
+    ps.finish(`“${f.name}” is no longer locked`, `${done} ${done === 1 ? 'note' : 'notes'} decrypted`, '', { auto: true });
+    return true;
+  } catch (e) {
+    console.error(e);
+    ps.finish('Paused', e.message, 'Nothing was lost. Unlock the folder again to finish removing the lock.');
+    return false;
+  }
+}
+
+/* ---------------- folder options (sidebar ••• / long-press, and the header •••) ---------------- */
+async function ensureUnlocked(f) {
+  if (!f.locked || store.isUnlocked(f.id)) return true;
+  return askFolderPassword(f);
+}
+function folderMenu(anchor, f) {
+  const items = [{ label: 'Rename', icon: 'edit', id: 'fmRename', onClick: async () => { const n = await promptText('Rename folder', f.name); if (n) { await store.renameFolder(f.id, n); renderLibrary(); } } }];
+  if (!f.locked) items.push({ label: 'Lock Folder…', icon: 'lock', id: 'fmLock', onClick: () => lockFolderFlow(f) });
+  else {
+    if (store.isUnlocked(f.id)) items.push({ label: 'Lock now', icon: 'lock', id: 'fmLockNow', onClick: () => { store.lockFolder(f.id); renderLibrary(); } });
+    else items.push({ label: 'Unlock…', icon: 'unlock', id: 'fmUnlock', onClick: () => goSection(f.id) });
+    items.push({ label: 'Change passcode…', icon: 'shield', id: 'fmChange', onClick: () => changePasscodeFlow(f) });
+    items.push({ label: 'Remove lock…', icon: 'unlock', id: 'fmRemove', onClick: () => removeLockFlow(f) });
+  }
+  items.push('-', { label: 'Delete folder…', icon: 'trash', danger: true, id: 'fmDelete', onClick: () => deleteFolderFlow(f) });
+  popover(anchor, items, { align: 'start', width: 260 });
+}
+async function removeLockFlow(f) {
+  if (!(await ensureUnlocked(f))) return;
+  if (!(await confirmDialog(`Remove the lock from “${f.name}”?`, 'Its notes will be decrypted and stored without a passcode on this iPad. You can lock the folder again later.', 'Remove lock', 'primary'))) return;
+  const ok = await runDecryption(f);
+  if (ok && section === f.id) section = f.id;
+  renderLibrary();
+}
+async function changePasscodeFlow(f) {
+  if (!(await ensureUnlocked(f))) return;
+  if (!(await confirmDialog(`Change the passcode of “${f.name}”?`, 'Inkwell decrypts the notes and encrypts them again with the new passcode. Keep Inkwell open until it finishes.', 'Continue', 'primary'))) return;
+  if (!(await runDecryption(f))) return renderLibrary();
+  const fresh = (await store.listFolders()).find((x) => x.id === f.id);
+  await lockFolderFlow(fresh);
+  const after = (await store.listFolders()).find((x) => x.id === f.id);
+  if (after && !after.locked) toast('The folder is now unlocked (no passcode). Use ••• → Lock Folder to set one.', 5000);
+  renderLibrary();
+}
+async function deleteFolderFlow(f) {
+  if (!(await ensureUnlocked(f))) return;
+  const n = (await store.countDocs())[f.id] || 0;
+  let mode = 'delete';
+  if (n) {
+    mode = await modal({ title: `Delete “${f.name}”?`, cls: 'del-folder-sheet', body: `<p>This folder has ${n} ${n === 1 ? 'note' : 'notes'}. What should happen to ${n === 1 ? 'it' : 'them'}?</p>`,
+      actions: [{ label: 'Cancel', value: null }, { label: `Move ${n === 1 ? 'note' : 'notes'} to Notes`, value: 'move', kind: 'primary' }, { label: `Delete ${n === 1 ? 'note' : 'notes'} too`, value: 'delete', kind: 'danger' }] });
+    if (!mode) return;
+    if (mode === 'delete' && !(await confirmDialog('Delete permanently?', `${n} ${n === 1 ? 'note' : 'notes'} in “${f.name}” will be deleted from this iPad, including recordings. This can’t be undone.`, `Delete ${n} ${n === 1 ? 'note' : 'notes'}`))) return;
+  } else if (!(await confirmDialog('Delete folder?', `“${f.name}” is empty and will be removed.`, 'Delete folder'))) return;
+  try {
+    if (mode === 'move') {
+      const ids = (await store.listDocs(f.id)).map((d) => d.id);
+      let moved = 0;
+      for (const id of ids) { await store.moveDoc(id, null); moved++; }
+      toast(`Moved ${moved} ${moved === 1 ? 'note' : 'notes'} to Notes`);
+      const left = (await store.countDocs())[f.id] || 0;
+      if (left) { toast('Some notes couldn’t be moved; the folder was kept.'); return renderLibrary(); }
+    }
+    await store.deleteFolder(f.id);
+    if (section === f.id) section = null;
+    toast(`Deleted “${f.name}”`);
+  } catch (e) { toast(e.locked ? 'The folder locked again — unlock it and try once more' : e.message, 4000); }
+  renderLibrary();
 }
 
 /* ---------------- select mode: batch move / delete ---------------- */
@@ -668,18 +762,7 @@ $('#selMoveBtn').addEventListener('click', async () => {
 $('#folderMenuBtn').addEventListener('click', (e) => {
   const f = folders.find((x) => x.id === section);
   if (!f) return;
-  const items = [{ label: 'Rename folder', icon: 'edit', onClick: async () => { const n = await promptText('Rename folder', f.name); if (n) { await store.renameFolder(f.id, n); renderLibrary(); } } }];
-  if (f.locked && store.isUnlocked(f.id)) items.push({ label: 'Lock now', icon: 'lock', onClick: () => { store.lockFolder(f.id); renderLibrary(); } });
-  if (!f.locked) items.push({ label: 'Lock Folder…', icon: 'lock', onClick: () => lockFolderFlow(f) });
-  items.push('-', {
-    label: 'Delete folder', icon: 'trash', danger: true, onClick: async () => {
-      if (f.locked && !store.isUnlocked(f.id)) return toast('Unlock the folder first');
-      if (!(await confirmDialog('Delete folder?', `“${f.name}” and every note in it will be permanently deleted.`))) return;
-      await store.deleteFolder(f.id);
-      section = null; renderLibrary();
-    },
-  });
-  popover(e.currentTarget, items);
+  folderMenu(e.currentTarget, f);
 });
 
 /* ---------------- create / import ---------------- */
@@ -836,6 +919,8 @@ async function openDoc(id) {
     $('#thumbs').classList.add('hidden');
     $('#pagesBtn').classList.remove('on');
     updateChrome();
+    $('#editor').classList.toggle('opts-collapsed', !!settings.optsCollapsed);
+    setBarHidden(false);
     editor.open(d);
     audio.onOpen();
   } catch (e) {
@@ -924,9 +1009,39 @@ function updateToolbar() {
   }).join('');
 }
 
+/* docked bar: pen-options row (collapsible, remembered) + hide-toolbar for full-page reading */
+const barH = () => document.getElementById('editor').style.setProperty('--barH', $('#edBar').offsetHeight + 'px');
+function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
+  const ed = $('#editor'), was = ed.classList.contains('opts-collapsed');
+  if (was === !!on) return;
+  const s = $('#docScroll'), h0 = $('#optRow').offsetHeight, top0 = s.scrollTop;
+  ed.classList.toggle('opts-collapsed', !!on);
+  // keep the page exactly where it was on screen (computed before the resize can clamp scrollTop)
+  if (keepPlace) s.scrollTop = Math.max(0, on ? top0 - h0 : top0 + $('#optRow').offsetHeight);
+  if (remember) { settings.optsCollapsed = !!on; saveSettings(); }
+  barH();
+}
+function setBarHidden(on) {
+  $('#editor').classList.toggle('bar-hidden', !!on);
+  $('#barRestore').hidden = !on;
+  barH();
+}
+$('#optsHideBtn').addEventListener('click', () => setOptsCollapsed(true));
+$('#barRestore').addEventListener('click', () => setBarHidden(false));
+// start writing with the Pencil -> fold the options away, but only when the page can stay exactly in place
+$('#docScroll').addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'pen' || $('#editor').classList.contains('opts-collapsed')) return;
+  if (!['pen', 'hl'].includes(settings.tool)) return;
+  if ($('#docScroll').scrollTop >= $('#optRow').offsetHeight) setOptsCollapsed(true, { remember: false }); // comes back on the next tool change
+}, true);
+new ResizeObserver(barH).observe($('#edBar'));
+
 $('#toolSeg').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tool]');
   if (!b) return;
+  // tapping the tool that's already active shows / hides its options row
+  if (b.dataset.tool === settings.tool) { setOptsCollapsed(!$('#editor').classList.contains('opts-collapsed')); return; }
+  if (!settings.optsCollapsed) setOptsCollapsed(false);
   settings.tool = b.dataset.tool;
   if (settings.tool !== 'lasso') editor.clearSelection();
   saveSettings(); updateToolbar();
@@ -1267,6 +1382,8 @@ $('#edMoreBtn').addEventListener('click', (e) => {
     { label: 'Export as PDF', icon: 'download', onClick: () => exportCurrentPdf() },
     { label: 'Rename…', icon: 'edit', onClick: () => renameCurrent() },
     { label: 'Draw with finger', icon: 'hand', checked: !!settings.fingerDraw, onClick: () => $('#fingerBtn').click() },
+    { label: 'Pen options row', icon: 'pen', id: 'optsToggle', checked: !$('#editor').classList.contains('opts-collapsed'), onClick: () => setOptsCollapsed(!$('#editor').classList.contains('opts-collapsed')) },
+    { label: 'Hide toolbar (reading)', icon: 'chevUp', id: 'hideBarItem', onClick: () => setBarHidden(true) },
     '-',
     { label: 'Delete note', icon: 'trash', danger: true, onClick: async () => {
       if (!(await confirmDialog('Delete note?', `“${current.meta.title}” will be permanently deleted.`))) return;
@@ -1350,8 +1467,14 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10d';
+const APP_VERSION = '2026.10.10e';
 const CHANGES = [
+  ['2026.10.10e', [
+    'The note toolbar is now a solid bar docked at the top: the page starts below it, so nothing covers your PDF at any zoom or scroll.',
+    'Colours and sizes sit in a second row of the bar. Tap the active tool again (or the ⌃ at the end of the row) to hide it; Inkwell remembers. It also folds away when you start writing, without moving the page.',
+    '••• → Hide toolbar (reading) shows the full page; a small button in the top-right corner brings it back.',
+    'Folders in the sidebar have a ••• button (or long-press): Rename, Lock Folder, Unlock, Change passcode, Remove lock, Delete. Deleting asks whether to move the notes to Notes or delete them too (with a second confirm); locked folders need their passcode first.',
+  ]],
   ['2026.10.10d', [
     'Original dates for imported notes: each card now shows “Created …” in small grey under the name. For Notability and scanned PDFs it’s the real date, taken from the file name (“Note Sep 30, 2017 …”) or the recording; notes you already imported are updated automatically (locked folders once unlocked).',
     'New sort: Date created (newest / oldest), now the default. ⋯ → Info shows created, added and last-edited dates.',

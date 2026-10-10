@@ -42,6 +42,7 @@ const P = {
   mic: '<rect width="6" height="12" x="9" y="2" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/>',
   play: '<path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z" fill="currentColor" stroke="none"/>',
   pause: '<rect width="4.5" height="16" x="5.5" y="4" rx="1.2" fill="currentColor" stroke="none"/><rect width="4.5" height="16" x="14" y="4" rx="1.2" fill="currentColor" stroke="none"/>',
+  chevUp: '<path d="m18 15-6-6-6 6"/>',
   chevDown: '<path d="m6 9 6 6 6-6"/>',
   back15: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M10 10v6"/><path d="M15.5 10H13l-.3 2.6a2 2 0 1 1 .3 2.9"/>',
   waves: '<path d="M2 10v4"/><path d="M6 6v12"/><path d="M10 3v18"/><path d="M14 8v8"/><path d="M18 5v14"/><path d="M22 10v4"/>',
