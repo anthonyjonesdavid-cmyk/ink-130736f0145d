@@ -177,7 +177,7 @@ export class Editor {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, W, H);
       ctx.setTransform(k, 0, 0, k, 0, 0);
-      drawStrokes(ctx, p.strokes, tool, hlAlpha(p, this.doc.meta.paper));
+      drawStrokes(ctx, p.strokes, tool, hlAlpha(p, this.doc.meta.paper), this.fadeFn());
     }
   }
 
@@ -235,6 +235,12 @@ export class Editor {
     if (this.moving && this.moving.pointerType === 'touch' && e.pointerType === 'pen') this.endMove();
     // palm rejection: once the Pencil (or a finger) is busy, ignore every other contact
     if (this.cur || this.erasing || this.lasso || this.moving) return;
+    // audio playback: tapping ink that was written during a recording jumps the audio there
+    if (this.playback && !this.sel) {
+      const [x, y] = this.toPage(e, el);
+      const st = [...el._page.strokes].reverse().find((s) => s.rec && this.playback.recs.has(s.rec) && strokeHit(s, x, y, 8 / this.scale));
+      if (st) { e.preventDefault(); this.seekTap = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, st }; return; }
+    }
     // a selection can be dragged / resized with the Pencil or a finger, whatever tool is active
     if (this.sel && this.sel.el === el) {
       const [x, y] = this.toPage(e, el);
@@ -260,6 +266,7 @@ export class Editor {
     }
     const cfg = this.settings[tool];
     const stroke = { id: uid(), tool: tool === 'hl' ? 'hl' : 'pen', color: cfg.color, size: cfg.size, pr: e.pointerType === 'pen' ? 1 : 0, pts: [] };
+    if (this.recording) { stroke.rec = this.recording.id; stroke.at = Math.max(0, Math.round(this.recording.clock())); } // audio sync
     this.cur = { el, stroke, pointerId: e.pointerId, pointerType: e.pointerType, lastP: 0.5 };
     this.addPoints(e);
     this.attachLive(el, tool === 'hl' ? 2 : 4);
@@ -320,7 +327,7 @@ export class Editor {
   resetSelectionState() {
     if (this.lasso) { this.lasso = null; this.detachLive(); }
     if (this._mraf) { cancelAnimationFrame(this._mraf); this._mraf = 0; }
-    this.moving = null; this.tapOut = null; this.swallow = null;
+    this.moving = null; this.tapOut = null; this.swallow = null; this.seekTap = null;
     if (this.sel) this.clearSelection();
   }
   onLassoDown(e, el) {
@@ -664,6 +671,11 @@ export class Editor {
   }
 
   onUp(e, cancelled) {
+    if (this.seekTap && e.pointerId === this.seekTap.pointerId) {
+      const T = this.seekTap; this.seekTap = null;
+      if (!cancelled && Math.hypot(e.clientX - T.x, e.clientY - T.y) < 12) this.onSeekStroke?.(T.st);
+      return;
+    }
     if (this.swallow != null && e.pointerId === this.swallow) { this.swallow = null; return; }
     if (this.tapOut && e.pointerId === this.tapOut.pointerId) {
       const T = this.tapOut; this.tapOut = null;
@@ -988,6 +1000,32 @@ export class Editor {
         this.redraw(el); break;
     }
   }
+  /* ---------------- audio playback: dim ink written after the playhead ---------------- */
+  // playback = { rec: id being played, recs: Set of this note's recording ids, t: playhead ms }
+  fadeFn() {
+    const P = this.playback;
+    if (!P || P.t == null) return null;
+    return (st) => (st.rec === P.rec && st.at > P.t ? 0.2 : 1);
+  }
+  setPlayback(P) {
+    this.playback = P ? { ...P } : null;
+    this._fadeKey = null;
+    this.redrawVisible();
+  }
+  setPlayhead(ms) {
+    const P = this.playback;
+    if (!P) return;
+    P.t = ms;
+    // only repaint when some stroke crosses the playhead
+    let n = 0;
+    for (const p of this.doc.body.pages) for (const st of p.strokes) if (st.rec === P.rec && st.at <= ms) n++;
+    const key = P.rec + ':' + n;
+    if (key === this._fadeKey) return;
+    this._fadeKey = key;
+    this.redrawVisible();
+  }
+  redrawVisible() { for (const el of this.pageEls || []) if (el._rs) this.redrawInk(el); }
+
   busy() { return !!(this.cur || this.erasing || this.lasso || this.moving); }
   undo() {
     if (this.busy()) return;

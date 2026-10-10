@@ -1,7 +1,8 @@
 // Minimal promise wrapper around IndexedDB.
 const DB_NAME = 'inkwell';
-const VERSION = 1;
-export const STORES = ['folders', 'docs', 'content', 'files'];
+// v2 adds 'audio' (voice recordings, one record each, indexed by docId). Upgrading only adds the store; nothing is rewritten.
+const VERSION = 2;
+export const STORES = ['folders', 'docs', 'content', 'files', 'audio'];
 let dbp = null;
 
 export function openDB() {
@@ -10,7 +11,10 @@ export function openDB() {
       const req = indexedDB.open(DB_NAME, VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
-        for (const s of STORES) if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: 'id' });
+        for (const s of STORES) if (!db.objectStoreNames.contains(s)) {
+          const os = db.createObjectStore(s, { keyPath: 'id' });
+          if (s === 'audio') os.createIndex('docId', 'docId', { unique: false });
+        }
       };
       req.onsuccess = () => {
         const db = req.result;
@@ -42,6 +46,8 @@ async function run(stores, mode, fn) {
 
 export const get = (store, id) => run([store], 'readonly', (t) => reqP(t.objectStore(store).get(id)));
 export const getAll = (store) => run([store], 'readonly', (t) => reqP(t.objectStore(store).getAll()));
+export const getAllBy = (store, index, key) => run([store], 'readonly', (t) => reqP(t.objectStore(store).index(index).getAll(key)));
+export const keysBy = (store, index, key) => run([store], 'readonly', (t) => reqP(t.objectStore(store).index(index).getAllKeys(key)));
 export const put = (store, val) => run([store], 'readwrite', (t) => { t.objectStore(store).put(val); });
 export const del = (store, id) => run([store], 'readwrite', (t) => { t.objectStore(store).delete(id); });
 

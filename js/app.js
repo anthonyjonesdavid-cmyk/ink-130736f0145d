@@ -5,6 +5,8 @@ import { openPdf, pageSizes } from './pdf.js';
 import { $, $$, esc, h, toast, modal, promptText, confirmDialog, popover, closePopover } from './ui.js';
 import { createPinPad } from './pin.js';
 import * as throttle from './throttle.js';
+import * as audio from './audio.js';
+import * as backup from './backup.js';
 import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest } from './drive.js';
 import {
   renderPageInto, PAPER_STYLES, PAPER_COLORS, PEN_COLORS, PEN_SIZES, HL_COLORS, HL_SIZES, ERASER_SIZES, drawPaper, isDark, hexToRgb, loadGrain, presetFor,
@@ -684,6 +686,7 @@ async function openDoc(id) {
     $('#pagesBtn').classList.remove('on');
     updateChrome();
     editor.open(d);
+    audio.onOpen();
   } catch (e) {
     console.error(e);
     toast(e.locked ? 'This folder is locked' : 'Couldn’t open note: ' + e.message);
@@ -693,6 +696,7 @@ async function openDoc(id) {
 async function closeDoc({ fast = false } = {}) {
   if (!current) return;
   const d = current;
+  await audio.onClose(); // stops + saves a running recording first
   editor.cancelActive();
   if (!fast && thumbStale) {
     try { d.meta.thumb = await makeThumb(d.meta, d.body, d.pdfDoc); dirty = true; } catch {}
@@ -1162,6 +1166,15 @@ async function exportPdfById(id) {
   } catch (e) { console.error(e); toast('Export failed: ' + e.message, 4000); }
 }
 
+audio.initAudio({
+  editor, current: () => current, changed: () => scheduleSave(), deliverFile,
+  addRecordingMeta: async (docId, meta) => {
+    try { const d = await store.loadDoc(docId); (d.body.recordings || (d.body.recordings = [])).push(meta); await store.saveDoc(d); }
+    catch (e) { console.warn(e); toast('The recording was saved, but the note was locked before it could be listed'); }
+  },
+});
+window.__inkwell.audio = audio;
+
 /* ---------------- settings, storage, backup ---------------- */
 async function storageStatus() {
   const out = { persisted: null, usage: null, quota: null };
@@ -1185,8 +1198,14 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.09';
+const APP_VERSION = '2026.10.10';
 const CHANGES = [
+  ['2026.10.10', [
+    'Audio recording: tap the microphone in a note to record. Everything you write while recording is synced to the audio.',
+    'Playback bar: play, pause, scrub and jump back 15 s. Ink written later than the playhead is dimmed; tap any stroke to hear what was said when you wrote it.',
+    'Several recordings per note: list, export (m4a) or delete them. Recordings are kept on this iPad, are in backups, and are encrypted in locked folders.',
+    'Google Drive backup (Settings): backs up daily when you open Inkwell, keeps the last 7, Back up now, and Restore that only adds missing or newer notes.',
+  ]],
   ['2026.10.09', [
     'Photos: the new photo button adds pictures from Photos, the camera or Files. Drag to move, drag a corner to resize, Rotate, Delete. Write on top of them.',
     'Photos are saved inside the note: they come along in backups and PDF exports, and are encrypted in locked folders.',
@@ -1214,6 +1233,12 @@ async function openSettings() {
       <p>Save everything to a single file (Files, iCloud Drive, AirDrop…). Encrypted folders stay encrypted inside the backup — you’ll need their passwords after restoring.</p>
       <div class="row"><button class="btn primary" id="sExport">${icon('download')} Export backup</button><button class="btn secondary" id="sImport">${icon('upload')} Import backup</button></div>
     </div>
+    <div class="set-group" id="sDrive">
+      <div class="set-title">${icon('cloud')} Back up to Google Drive</div>
+      <p>Backs up daily when you open Inkwell (iPad apps can’t run in the background). Keeps the last 7 backups in an “Inkwell Backups” folder in your Google Drive; Inkwell can only see files it created there. Locked folders stay encrypted.</p>
+      <p class="bk-status" id="sDriveStatus"></p>
+      <div class="row" id="sDriveBtns"></div>
+    </div>
     <details class="set-group whatsnew"><summary class="set-title">What’s new · ${APP_VERSION}</summary>
       ${CHANGES.map(([v, items]) => `<p><b>${v}</b></p><ul>${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`).join('')}
     </details>
@@ -1227,6 +1252,22 @@ async function openSettings() {
     toast(ok ? 'Persistent storage granted' : 'Safari declined for now — adding to Home Screen helps');
   });
   $('#sExport', body).addEventListener('click', exportBackup);
+  backup.preload(true);
+  const drawDrive = () => {
+    const st = backup.state();
+    $('#sDriveStatus', body).innerHTML = st.on ? backup.statusText(st) : 'Off';
+    $('#sDriveBtns', body).innerHTML = st.on
+      ? `<button class="btn primary" id="sBkNow">${icon('cloud')} Back up now</button><button class="btn secondary" id="sBkRestore">${icon('download')} Restore…</button><button class="btn secondary" id="sBkOff">Turn off</button>`
+      : `<button class="btn primary" id="sBkOn">${icon('cloud')} Turn on &amp; back up now</button><button class="btn secondary" id="sBkRestore">${icon('download')} Restore…</button>`;
+  };
+  drawDrive();
+  const unsub = backup.onChange(() => { if (body.isConnected) drawDrive(); else unsub(); });
+  $('#sDriveBtns', body).addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'sBkOn' || b.id === 'sBkNow') backup.backupNow({ interactive: true }).then(drawDrive);
+    if (b.id === 'sBkOff') { backup.turnOff(); drawDrive(); toast('Google Drive backup off (your backups stay in Drive)'); }
+    if (b.id === 'sBkRestore') backup.restoreFlow(() => renderLibrary());
+  });
   $('#sImport', body).addEventListener('click', () => $('#backupInput').click());
   modal({ title: 'Settings', body, actions: [{ label: 'Done', value: true, kind: 'primary' }] });
 }
@@ -1255,6 +1296,7 @@ $('#backupInput').addEventListener('change', async (e) => {
 
 /* ---------------- auto-relock ---------------- */
 async function relockAll() {
+  await audio.stopRecording(); // iPadOS cuts the mic in the background anyway: save what we have
   const anyKeys = store.unlockedIds().length > 0;
   if (current && current.encrypted) {
     document.body.classList.add('privacy'); // hide content from the app switcher snapshot
@@ -1267,7 +1309,11 @@ async function relockAll() {
   }
   document.body.classList.remove('privacy');
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') relockAll(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { backup.onHidden(); relockAll(); }
+  else backup.maybeAuto();
+});
+setTimeout(() => { backup.preload(); backup.maybeAuto(); }, 1500); // app opened
 window.addEventListener('pagehide', () => relockAll());
 
 /* ---------------- misc platform glue ---------------- */

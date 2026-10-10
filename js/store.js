@@ -77,7 +77,10 @@ export async function deleteFolder(id) {
   if (f && f.locked && !keys.has(id)) throw new LockedError();
   const docs = (await db.getAll('docs')).filter((d) => d.folderId === id);
   const ops = [{ store: 'folders', del: id }];
-  for (const d of docs) for (const s of ['docs', 'content', 'files']) ops.push({ store: s, del: d.id });
+  for (const d of docs) {
+    for (const s of ['docs', 'content', 'files']) ops.push({ store: s, del: d.id });
+    for (const a of await db.keysBy('audio', 'docId', d.id)) ops.push({ store: 'audio', del: a });
+  }
   await db.batch(ops);
   keys.delete(id);
 }
@@ -149,8 +152,33 @@ export async function saveMeta(id, folderId, meta) {
 }
 
 export async function deleteDoc(id) {
-  await db.batch(['docs', 'content', 'files'].map((s) => ({ store: s, del: id })));
+  const ops = ['docs', 'content', 'files'].map((s) => ({ store: s, del: id }));
+  for (const a of await db.keysBy('audio', 'docId', id)) ops.push({ store: 'audio', del: a });
+  await db.batch(ops);
 }
+
+/* ---------- voice recordings ----------
+   audio store: {id, docId, folderId, mime, enc, bytes | box}   (box = AES-GCM with the folder key, AAD inkwell:audio:<id>)
+   The list of recordings (id, start time, duration) lives in the note body (body.recordings); strokes written while
+   recording carry {rec: <recording id>, at: <ms from the start>}. */
+// key: pass the folder key captured when recording started (undefined = look it up now; null = folder not locked)
+export async function saveAudio({ id, docId, folderId, mime, bytes }, key) {
+  if (key === undefined) key = await folderKey(folderId);
+  const rec = key
+    ? { id, docId, folderId: folderId || null, mime, enc: true, box: await C.encryptBytes(key, bytes, aad('audio', id)) }
+    : { id, docId, folderId: folderId || null, mime, enc: false, bytes };
+  await db.put('audio', rec);
+}
+export async function loadAudio(id) {
+  const rec = await db.get('audio', id);
+  if (!rec) return null;
+  if (!rec.enc) return { mime: rec.mime, bytes: toU8(rec.bytes) };
+  const k = keys.get(rec.folderId);
+  if (!k) throw new LockedError();
+  return { mime: rec.mime, bytes: await C.decryptBytes(k, rec.box, aad('audio', id)) };
+}
+export const deleteAudio = (id) => db.del('audio', id);
+export const audioIds = (docId) => db.keysBy('audio', 'docId', docId);
 
 // Re-encrypts (or decrypts) as needed. Both folders must be unlocked.
 export async function moveDoc(id, toFolderId) {
@@ -185,32 +213,35 @@ function sameBytes(a, b) {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
+const BYTES = new Set(['file', 'audio']);
 async function plainOf(rec, kind, key) {
-  if (!rec.enc) return kind === 'file' ? toU8(rec.bytes) : rec.data;
+  if (!rec.enc) return BYTES.has(kind) ? toU8(rec.bytes) : rec.data;
   if (!key) throw new LockedError();
-  return kind === 'file' ? C.decryptBytes(key, rec.box, aad('file', rec.id)) : C.decryptJSON(key, rec.box, aad(kind, rec.id));
+  return BYTES.has(kind) ? C.decryptBytes(key, rec.box, aad(kind, rec.id)) : C.decryptJSON(key, rec.box, aad(kind, rec.id));
 }
-async function sealAs(kind, id, folderId, plain, key) {
-  if (kind === 'file') return key ? { id, folderId, enc: true, box: await C.encryptBytes(key, plain, aad('file', id)) } : { id, folderId, enc: false, bytes: plain };
+async function sealAs(kind, id, folderId, plain, key, extra = {}) {
+  if (BYTES.has(kind)) return key ? { id, ...extra, folderId, enc: true, box: await C.encryptBytes(key, plain, aad(kind, id)) } : { id, ...extra, folderId, enc: false, bytes: plain };
   return sealJSON(key, kind, id, folderId, plain);
 }
 async function matches(rec, kind, key, plain) {
   try {
     const got = await plainOf(rec, kind, key);
-    return kind === 'file' ? sameBytes(got, plain) : JSON.stringify(got) === JSON.stringify(plain);
+    return BYTES.has(kind) ? sameBytes(got, plain) : JSON.stringify(got) === JSON.stringify(plain);
   } catch { return false; }
 }
 async function rewriteDoc(id, toFolderId, { srcKey, dstKey }) {
   const olds = await Promise.all(KINDS.map(([st]) => db.get(st, id)));
   if (!olds[0]) throw new Error('Note not found');
+  // the note's records: docs/content/files share its id; each voice recording is its own 'audio' record
+  const items = KINDS.map(([st, kind], i) => ({ st, kind, old: olds[i] }));
+  for (const a of await db.getAllBy('audio', 'docId', id)) items.push({ st: 'audio', kind: 'audio', old: a });
   const plan = [];
-  for (let i = 0; i < KINDS.length; i++) {
-    const [st, kind] = KINDS[i], old = olds[i];
+  for (const { st, kind, old } of items) {
     if (!old) continue;
     const already = (old.folderId || null) === (toFolderId || null) && !!old.enc === !!dstKey;
     if (already) continue;
     const plain = await plainOf(old, kind, srcKey);
-    const rec = await sealAs(kind, id, toFolderId, plain, dstKey);
+    const rec = await sealAs(kind, old.id, toFolderId, plain, dstKey, kind === 'audio' ? { docId: old.docId, mime: old.mime } : {});
     if (!(await matches(rec, kind, dstKey, plain))) throw new Error('Encryption check failed; nothing was changed');
     plan.push({ st, kind, old, rec, plain });
   }
@@ -218,7 +249,7 @@ async function rewriteDoc(id, toFolderId, { srcKey, dstKey }) {
   await db.batch(plan.map((p) => ({ store: p.st, put: p.rec })));
   let ok = true;
   for (const p of plan) {
-    const back = await db.get(p.st, id);
+    const back = await db.get(p.st, p.old.id);
     if (hooks.failVerify || !back || !(await matches(back, p.kind, dstKey, p.plain))) { ok = false; break; }
   }
   if (!ok) {
@@ -253,6 +284,7 @@ export async function pendingEncryption(id) {
   const ids = [];
   for (const d of docs) {
     const recs = await Promise.all(KINDS.map(([st]) => db.get(st, d.id)));
+    recs.push(...(await db.getAllBy('audio', 'docId', d.id)));
     if (recs.some((r) => r && !r.enc)) ids.push(d.id);
   }
   return ids;
@@ -310,4 +342,52 @@ export async function importBackup(text) {
   for (const s of db.STORES) for (const rec of data[s] || []) if (rec && rec.id) ops.push({ store: s, put: rec });
   await db.batch(ops);
   return { folders: (data.folders || []).length, docs: (data.docs || []).length };
+}
+
+/* ---------- merge a backup (Google Drive restore) ----------
+   Non-destructive: nothing local is deleted.
+   * folders that don't exist here are added (locked ones keep their own password);
+   * notes that don't exist here are added with all their records;
+   * a note that exists in both is replaced only when the backup copy is newer (both readable without a key);
+     otherwise — or when either copy is encrypted — the copy on this device is kept;
+   * a note whose records don't match its folder's lock state here (e.g. the folder was locked after the backup)
+     is skipped, so plaintext never lands in a locked folder. */
+export function parseBackup(text) {
+  let data;
+  try { data = JSON.parse(text, (k, v) => (v && typeof v === 'object' && typeof v.$b64 === 'string' ? unb64(v.$b64) : v)); }
+  catch { throw new Error('That file is not an Inkwell backup.'); }
+  if (!data || data.format !== 'inkwell-backup') throw new Error('That file is not an Inkwell backup.');
+  return data;
+}
+export async function mergeBackup(text) {
+  const data = parseBackup(text);
+  const res = { folders: 0, added: 0, updated: 0, kept: 0, skipped: 0 };
+  const localFolders = new Map((await db.getAll('folders')).map((f) => [f.id, f]));
+  for (const f of data.folders || []) {
+    if (!f || !f.id || localFolders.has(f.id)) continue;
+    await db.put('folders', f); localFolders.set(f.id, f); res.folders++;
+  }
+  const by = (arr) => new Map((arr || []).filter((r) => r && r.id).map((r) => [r.id, r]));
+  const content = by(data.content), files = by(data.files);
+  const audio = new Map();
+  for (const a of data.audio || []) if (a && a.id && a.docId) (audio.get(a.docId) || audio.set(a.docId, []).get(a.docId)).push(a);
+  for (const d of data.docs || []) {
+    if (!d || !d.id) continue;
+    const recs = [d, content.get(d.id), files.get(d.id), ...(audio.get(d.id) || [])].filter(Boolean);
+    const f = d.folderId ? localFolders.get(d.folderId) : null;
+    const wantEnc = !!(f && f.locked);
+    if (recs.some((r) => !!r.enc !== wantEnc)) { res.skipped++; continue; }
+    const local = await db.get('docs', d.id);
+    if (local) {
+      const newer = !local.enc && !d.enc && (d.data?.updatedAt || 0) > (local.data?.updatedAt || 0);
+      if (!newer) { res.kept++; continue; }
+    }
+    const ops = [{ store: 'docs', put: d }];
+    if (content.has(d.id)) ops.push({ store: 'content', put: content.get(d.id) });
+    if (files.has(d.id)) ops.push({ store: 'files', put: files.get(d.id) });
+    for (const a of audio.get(d.id) || []) ops.push({ store: 'audio', put: a });
+    await db.batch(ops); // one transaction per note
+    local ? res.updated++ : res.added++;
+  }
+  return res;
 }

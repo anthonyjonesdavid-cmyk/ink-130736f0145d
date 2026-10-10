@@ -190,15 +190,16 @@ export function strokePath2D(st) {
   return path;
 }
 
-export function drawStroke(ctx, st, path, hlAlpha = HL_ALPHA) {
-  ctx.globalAlpha = st.tool === 'hl' ? hlAlpha : 1;
+export function drawStroke(ctx, st, path, hlAlpha = HL_ALPHA, fade = 1) {
+  ctx.globalAlpha = (st.tool === 'hl' ? hlAlpha : 1) * fade;
   ctx.fillStyle = st.color;
   ctx.fill(path || strokePath2D(st));
   ctx.globalAlpha = 1;
 }
 
-export function drawStrokes(ctx, strokes, tool, hlAlpha = HL_ALPHA) {
-  for (const st of strokes) if (st.tool === tool) drawStroke(ctx, st, null, hlAlpha);
+// fade(st) -> opacity multiplier (audio playback dims ink written after the playhead)
+export function drawStrokes(ctx, strokes, tool, hlAlpha = HL_ALPHA, fade = null) {
+  for (const st of strokes) if (st.tool === tool) drawStroke(ctx, st, null, hlAlpha, fade ? fade(st) : 1);
 }
 
 const boundsCache = new WeakMap();
