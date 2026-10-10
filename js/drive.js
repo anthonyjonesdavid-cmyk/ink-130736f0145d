@@ -24,6 +24,7 @@ const RETRIES = 4;                                        // automatic resumes p
 const BACKOFF = window.__inkwellDriveBackoff || [1000, 2500, 5000, 8000];  // ms before each resume
 const MAX_ITEMS = 200;                                   // Picker multi-select cap (bigger batches: pick the folder)
 const FOLDER = 'application/vnd.google-apps.folder';
+const ZIPS = ['application/zip', 'application/x-zip-compressed']; // Notability exports (PDF + audio)
 const MAX_DEPTH = 4;                                     // subfolder levels listed under a picked folder
 const REDIRECT = new URL('./', location.href).href.split('#')[0].split('?')[0];
 
@@ -147,7 +148,7 @@ function redirectSignIn() {
 function showPicker() {
   const P = google.picker;
   // PDFs and folders; a folder can itself be selected (-> checklist of its PDFs). Multi-select is on.
-  const view = new P.DocsView(P.ViewId.DOCS).setMimeTypes('application/pdf,' + FOLDER).setIncludeFolders(true).setSelectFolderEnabled(true).setMode(P.DocsViewMode.LIST);
+  const view = new P.DocsView(P.ViewId.DOCS).setMimeTypes('application/pdf,application/zip,application/x-zip-compressed,application/octet-stream,' + FOLDER).setIncludeFolders(true).setSelectFolderEnabled(true).setMode(P.DocsViewMode.LIST);
   const b = new P.PickerBuilder().addView(view).enableFeature(P.Feature.MULTISELECT_ENABLED)
     .setOAuthToken(tok.t).setDeveloperKey(GOOGLE_API_KEY).setAppId(GOOGLE_APP_ID)
     .setTitle('Select PDFs or a whole folder (you can select several)').setMaxItems(MAX_ITEMS).setCallback(onPicked);
@@ -175,7 +176,7 @@ function onPicked(d) {
     const mt = x[P.Document.MIME_TYPE] || 'application/pdf', id = x[P.Document.ID], name = x[P.Document.NAME] || 'Untitled';
     const rk = x.resourceKey || '';
     if (mt === FOLDER) folders.push({ id, name, keys: rk ? [`${id}/${rk}`] : [] });
-    else if (mt === 'application/pdf') files.push({ id, name, size: +(x.sizeBytes || x[P.Document.SIZE_BYTES] || 0), keys: rk ? [`${id}/${rk}`] : [] });
+    else if (mt === 'application/pdf' || ZIPS.includes(mt) || /\.(zip|note)$/i.test(name)) files.push({ id, name, size: +(x.sizeBytes || x[P.Document.SIZE_BYTES] || 0), keys: rk ? [`${id}/${rk}`] : [] });
   }
   if (!folders.length && !files.length) { toast('No PDFs in that selection'); return; }
   if (!folders.length && files.length === 1) { importRemote(files); return; }  // one file: straight in, like before
@@ -187,7 +188,7 @@ const keyHeader = (keys) => { const v = [...new Set((keys || []).filter(Boolean)
 async function listFolder(folder, { deep, onCount, onSub, signal }, depth = 0, path = '') {
   let out = [], page = '';
   do {
-    const q = new URLSearchParams({ q: `'${folder.id}' in parents and trashed=false and (mimeType='application/pdf' or mimeType='${FOLDER}')`,
+    const q = new URLSearchParams({ q: `'${folder.id}' in parents and trashed=false and (mimeType='application/pdf' or mimeType='application/zip' or mimeType='application/x-zip-compressed' or name contains '.note' or mimeType='${FOLDER}')`,
       fields: 'nextPageToken,files(id,name,size,mimeType,resourceKey)', pageSize: '1000', orderBy: 'folder,name_natural',
       supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
     if (page) q.set('pageToken', page);

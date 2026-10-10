@@ -19,7 +19,7 @@ let play = null;  // { audio, url, id, raf }
 export const fmt = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, '0')}`; };
 const ext = (mime) => (/mp4|aac/.test(mime || '') ? 'm4a' : /ogg/.test(mime || '') ? 'ogg' : 'webm');
 const recs = () => (A.current()?.body.recordings || []);
-const label = (r, i) => `Recording ${i + 1}`;
+const label = (r, i) => r.title || `Recording ${i + 1}`;
 
 export function initAudio(host) {
   A = host;
@@ -206,7 +206,7 @@ function recordingsMenu(anchor) {
   const list = recs();
   const pop = h(`<div class="rec-list"><div class="pop-title">Recordings</div>${list.map((r, i) => `
     <div class="rec-row ${play && play.id === r.id ? 'on' : ''}" data-id="${r.id}">
-      <button type="button" class="rec-open" data-act="open"><b>${label(r, i)}</b><small>${new Date(r.startedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${fmt(r.dur)}</small></button>
+      <button type="button" class="rec-open" data-act="open"><b>${label(r, i)}</b><small>${new Date(r.startedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${fmt(r.dur)}${r.unsynced ? ' · not synced to ink' : ''}</small></button>
       <button type="button" class="icon-btn" data-act="export" aria-label="Export recording">${icon('share')}</button>
       <button type="button" class="icon-btn danger-txt" data-act="delete" aria-label="Delete recording">${icon('trash')}</button>
     </div>`).join('')}</div>`);

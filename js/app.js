@@ -7,6 +7,8 @@ import { createPinPad } from './pin.js';
 import * as throttle from './throttle.js';
 import * as audio from './audio.js';
 import { trimBody, setTrim, isTrimmed } from './trim.js';
+import { importNotability, looksNotability } from './notability.js';
+import { isZip } from './unzip.js';
 import * as backup from './backup.js';
 import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest } from './drive.js';
 import {
@@ -690,14 +692,29 @@ $('#pdfInput').addEventListener('change', async (e) => {
   e.target.value = '';
   let lastId = null;
   for (const file of files) {
-    try { toast(`Importing ${file.name}…`, 10000); lastId = await importPdf(new Uint8Array(await file.arrayBuffer()), file.name, section); toast(`Imported “${file.name.replace(/\.pdf$/i, '')}”`); }
+    try { toast(`Importing ${file.name}…`, 10000); lastId = await importAny(new Uint8Array(await file.arrayBuffer()), file.name, section); toast(`Imported “${file.name.replace(/\.(pdf|zip|note)$/i, '')}”${lastNotabilityMsg}`, lastNotabilityMsg ? 5000 : 2400); }
     catch (err) {
-      console.error(err);
-      toast(err && err.name === 'PasswordException' ? `“${file.name}” is password-protected; unlock it first.` : `Couldn’t import “${file.name}”`, 4000);
+      (err && (err.notability || /zip/i.test(err.message)) ? console.warn : console.error)(err);
+      toast(err && err.name === 'PasswordException' ? `“${file.name}” is password-protected; unlock it first.` : err && err.notability ? err.message : `Couldn’t import “${file.name}”${err && /zip/i.test(err.message) ? ': ' + err.message : ''}`, 6000);
     }
   }
   if (files.length === 1 && lastId) openDoc(lastId); else renderLibrary();
 });
+
+// PDF or Notability export (zip: PDF + Recordings/*.m4a). Returns the (last) new note id.
+let lastNotabilityMsg = '';
+async function importAny(bytes, name, folderId, driveId) {
+  lastNotabilityMsg = '';
+  if (looksNotability(bytes, name) && isZip(bytes)) {
+    const ids = await importNotability(bytes, name, folderId, driveId, importPdf);
+    const d = await store.loadDoc(ids[ids.length - 1]);
+    const n = (d.body.recordings || []).length;
+    lastNotabilityMsg = n ? ` with ${n} recording${n > 1 ? 's' : ''} (audio isn’t synced to the writing)` : '';
+    return ids[ids.length - 1];
+  }
+  if (/\.note$/i.test(name)) throw Object.assign(new Error('This .note file isn’t a zip Inkwell can read.'), { notability: 'bad' });
+  return importPdf(bytes, name, folderId, driveId);
+}
 
 // shared by Files and Google Drive imports: one PDF -> one document in the given folder
 async function importPdf(bytes, name, folderId, driveId) {
@@ -739,7 +756,7 @@ initDrive({
     }
     return ids;
   },
-  importBytes: async (bytes, name, folderId, driveId) => { const id = await importPdf(bytes, name, folderId, driveId); if (!current) renderLibrary(); return id; },
+  importBytes: async (bytes, name, folderId, driveId) => { const id = await importAny(bytes, name, folderId, driveId); if (!current) renderLibrary(); return id; },
   done: (ids, n) => { if (ids.length === 1 && n === 1 && !current) openDoc(ids[0]); else if (!current) renderLibrary(); },
 });
 
@@ -1248,6 +1265,7 @@ audio.initAudio({
   },
 });
 window.__inkwell.audio = audio;
+window.__inkwell.importAny = (...a) => importAny(...a);
 
 /* ---------------- settings, storage, backup ---------------- */
 async function storageStatus() {
@@ -1272,8 +1290,12 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10b';
+const APP_VERSION = '2026.10.10c';
 const CHANGES = [
+  ['2026.10.10c', [
+    'Import Notability notes: Import PDF → From Files (or Google Drive) now also takes Notability exports (.zip with the PDF and its audio). Pages, handwriting and photos come in as the PDF; each recording becomes an Inkwell recording you can play, scrub and export.',
+    'Notability’s export doesn’t say when each stroke was written, so imported audio isn’t synced to the ink (tap-to-hear works only for notes recorded in Inkwell). The recordings list says “not synced to ink”.',
+  ]],
   ['2026.10.10b', [
     'Sort notes: the sliders button (top right) now has Name A–Z / Z–A, Date added and Date modified. Remembered on this iPad, same in every folder.',
     'Notes with audio show a small mic badge (with the number of recordings), and the same menu has a “Has audio” filter. Settings… moved into that menu.',
