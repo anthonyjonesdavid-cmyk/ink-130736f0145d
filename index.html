@@ -15,7 +15,7 @@
 <link rel="icon" type="image/png" href="icon-192.png">
 <script>/* home-screen app? reserve room for the status bar (see --top in styles.css) */
 if (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches) document.documentElement.classList.add('standalone');</script>
-<link rel="stylesheet" href="styles.css?v=8c874711486e" id="mainCss">
+<link rel="stylesheet" href="styles.css?v=80209b280627" id="mainCss">
 <!-- critical editor layout travels with the HTML, so a stale cached styles.css can never put the page on top of the toolbar -->
 <style>
 #editor:not(.hidden) { display: flex; flex-direction: column; }
@@ -108,7 +108,7 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
     </header>
     <div id="docScroll"><div id="pagesWrap"></div></div>
     <button id="barRestore" class="bar-restore" data-icon="chevDown" aria-label="Show toolbar" hidden></button>
-    <aside id="thumbs" class="thumbs pillbar hidden"></aside>
+    <aside id="thumbs" class="thumbs hidden" aria-label="Pages"></aside>
     <button id="zoomBtn" class="zoom-pill pillbar hidden" aria-label="Reset zoom">100%</button>
     <div id="pageIndicator" class="page-ind">1 / 1</div>
     <div id="playBar" class="play-bar pillbar" hidden></div>
@@ -122,6 +122,6 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
 <input type="file" id="pdfInput" class="file-input" accept="application/pdf,.pdf,application/zip,.zip,.note" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="photoInput" class="file-input" accept="image/*" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="backupInput" class="file-input" tabindex="-1" aria-hidden="true">
-<script type="module" src="js/app.js?v=8c874711486e"></script>
+<script type="module" src="js/app.js?v=80209b280627"></script>
 </body>
 </html>

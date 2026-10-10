@@ -926,6 +926,42 @@ export class Editor {
     return true;
   }
 
+  // page order map: body.pages is the order; PDF pages keep their pdfIndex, so the original PDF bytes never change
+  movePage(from, to) {
+    const n = this.doc.body.pages.length;
+    if (from === to || from < 0 || to < 0 || from >= n || to >= n) return false;
+    this.applyMove(from, to);
+    this.push({ t: 'movePage', from, to });
+    return true;
+  }
+  applyMove(from, to) {
+    const pages = this.doc.body.pages;
+    const [p] = pages.splice(from, 1); pages.splice(to, 0, p);
+    const [el] = this.pageEls.splice(from, 1); this.pageEls.splice(to, 0, el);
+    this.wrap.insertBefore(el, this.pageEls[to + 1] || null);
+    this.layout(); this.updateVisible();
+  }
+  // a copy right after the page: ink (incl. recording timestamps) and photos come along with new ids
+  duplicatePage(i) {
+    const src = this.doc.body.pages[i]; if (!src) return -1;
+    const page = JSON.parse(JSON.stringify(src));
+    page.id = uid();
+    for (const st of page.strokes || []) st.id = uid();
+    for (const m of page.images || []) m.id = uid();
+    this.insertPage(i + 1, page);
+    this.push({ t: 'addPage', index: i + 1, page });
+    return i + 1;
+  }
+  // blank page in the note's paper style, sized like its neighbour
+  insertBlank(index) {
+    const pages = this.doc.body.pages;
+    const ref = pages[Math.min(index, pages.length - 1)] || pages[index - 1];
+    const page = { id: uid(), kind: 'paper', w: ref ? ref.w : 612, h: ref ? ref.h : 792, strokes: [] };
+    this.insertPage(index, page);
+    this.push({ t: 'addPage', index, page });
+    return index;
+  }
+
   setPaper(paper) {
     const from = { ...this.doc.meta.paper };
     this.doc.meta.paper = { ...paper };
@@ -965,6 +1001,9 @@ export class Editor {
         break;
       case 'delPage':
         if (undo) this.insertPage(a.index, a.page); else this.removePage(a.index);
+        break;
+      case 'movePage':
+        if (undo) this.applyMove(a.to, a.from); else this.applyMove(a.from, a.to);
         break;
       case 'paper':
         this.doc.meta.paper = { ...(undo ? a.from : a.to) };

@@ -1026,7 +1026,8 @@ async function openDoc(id) {
     $('#library').classList.add('hidden');
     $('#editor').classList.remove('hidden');
     $('#thumbs').classList.add('hidden');
-    $('#pagesBtn').classList.remove('on');
+    $('#pagesBtn').classList.remove('on'); $('#editor').classList.remove('pages-open');
+    thumbCache.clear(); thumbOrder = '';
     updateChrome();
     $('#editor').classList.toggle('opts-collapsed', !!settings.optsCollapsed);
     setBarHidden(false);
@@ -1133,7 +1134,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.10h';
+const CSS_BUILD = '2026.10.10i';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1460,51 +1461,171 @@ $('#paperBtn').addEventListener('click', (e) => {
   drawPrev();
 });
 
-/* ---------------- page thumbnails ---------------- */
-$('#pagesBtn').addEventListener('click', () => {
+/* ---------------- page sidebar ----------------
+   Solid panel of page thumbnails (iPad: 200px on the left over the page; iPhone: full-height sheet). Open with the
+   Pages button or a finger swipe in from the left edge. Tap = jump; long-press = menu; long-press + drag = reorder
+   (auto-scrolls). All changes go through the editor's undo stack; thumbnails are cached per page id + revision. */
+const thumbCache = new Map(); // pageId -> {v, bmp canvas}
+const pagesOpen = () => !$('#thumbs').classList.contains('hidden');
+function setPagesOpen(show) {
   const t = $('#thumbs');
-  const show = t.classList.contains('hidden');
   t.classList.toggle('hidden', !show);
   $('#pagesBtn').classList.toggle('on', show);
-  if (show) refreshThumbs(true);
-});
+  $('#editor').classList.toggle('pages-open', show);
+  if (show) { refreshThumbs(true).then(() => $('.thumb-item.current', t)?.scrollIntoView({ block: 'nearest' })); }
+}
+$('#pagesBtn').addEventListener('click', () => setPagesOpen(!pagesOpen()));
 let thumbTimer;
-function scheduleThumbRefresh() { clearTimeout(thumbTimer); thumbTimer = setTimeout(() => refreshThumbs(), 900); }
+function scheduleThumbRefresh() { clearTimeout(thumbTimer); thumbTimer = setTimeout(() => refreshThumbs(), 600); }
+function thumbVersion(p) {
+  return p.id + ':' + p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + current.meta.paper.style + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + ':' + p.w + 'x' + p.h + ':' + JSON.stringify(p.trim || null);
+}
+let thumbOrder = '';
 async function refreshThumbs(full = false) {
   const t = $('#thumbs');
-  if (!current || t.classList.contains('hidden')) return;
+  if (!current || !pagesOpen() || pageDrag) return;
   const pages = current.body.pages;
-  if (full || t.children.length !== pages.length) {
-    t.innerHTML = pages.map((p, i) => `<div class="thumb-item" data-i="${i}"><button class="thumb-btn"><canvas></canvas></button><div class="thumb-foot"><span>${i + 1}</span>${pages.length > 1 ? `<button class="icon-btn xs thumb-del" aria-label="Delete page">${icon('trash')}</button>` : ''}</div></div>`).join('')
-      + `<button class="thumb-add">${icon('plus')}<span>Add page</span></button>`;
+  const order = pages.map((p) => p.id).join(',');
+  if (full || order !== thumbOrder || !$('.thumb-list', t)) {
+    thumbOrder = order;
+    t.innerHTML = `<div class="thumbs-head"><b>Pages</b><span class="thumbs-n">${pages.length}</span><button type="button" class="icon-btn" id="thumbsClose" aria-label="Close pages">${icon('x')}</button></div>
+      <div class="thumb-list">${pages.map((p, i) => `<div class="thumb-item" data-i="${i}" data-id="${p.id}"><div class="thumb-btn" role="button" aria-label="Page ${i + 1}"><canvas></canvas></div><div class="thumb-foot"><span>${i + 1}</span></div></div>`).join('')}
+      <button type="button" class="thumb-add" id="thumbAdd">${icon('plus')}<span>Add page</span></button></div>`;
   }
   const items = $$('.thumb-item', t);
   for (let i = 0; i < items.length; i++) {
     items[i].classList.toggle('current', i === editor.currentIndex);
+    const p = pages[i]; if (!p) continue;
     const c = $('canvas', items[i]);
-    const p = pages[i];
-    const v = p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + current.meta.paper.style + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + p.id;
-    if (c._v === v && !full) continue;
+    c.style.aspectRatio = `${p.w} / ${p.h}`;
+    const v = thumbVersion(p);
+    if (c._v === v) continue;
+    let hit = thumbCache.get(p.id);
+    if (!hit || hit.v !== v) {
+      const tmp = document.createElement('canvas');
+      await renderPageInto(tmp, p, current.meta.paper, current.pdfDoc, (150 * 2) / p.w, current.body.assets);
+      if (!current) return;
+      hit = { v, bmp: tmp }; thumbCache.set(p.id, hit);
+    }
+    if (!c.isConnected) return;
+    c.width = hit.bmp.width; c.height = hit.bmp.height;
+    c.getContext('2d').drawImage(hit.bmp, 0, 0);
     c._v = v;
-    const tmp = document.createElement('canvas');
-    await renderPageInto(tmp, p, current.meta.paper, current.pdfDoc, (128 * 2) / p.w, current.body.assets);
-    if (!current) return;
-    c.width = tmp.width; c.height = tmp.height;
-    c.getContext('2d').drawImage(tmp, 0, 0);
-    tmp.width = tmp.height = 0;
   }
 }
-$('#thumbs').addEventListener('click', async (e) => {
-  if (e.target.closest('.thumb-add')) { editor.addPage(current.body.pages.length - 1); refreshThumbs(); return; }
+const narrowPages = () => innerWidth < 700;
+function jumpTo(i) { editor.scrollToPage(i); if (narrowPages()) setPagesOpen(false); setTimeout(() => refreshThumbs(), 400); }
+function pageMenu(item) {
+  const i = +item.dataset.i, n = current.body.pages.length;
+  popover(item, [
+    { head: `Page ${i + 1}` },
+    { label: 'Duplicate', icon: 'copy', id: 'pmDup', onClick: () => { editor.duplicatePage(i); refreshThumbs(); toast(`Page ${i + 1} duplicated`); } },
+    { label: 'Insert blank page before', icon: 'addPage', id: 'pmBefore', onClick: () => { editor.insertBlank(i); refreshThumbs(); } },
+    { label: 'Insert blank page after', icon: 'addPage', id: 'pmAfter', onClick: () => { editor.insertBlank(i + 1); refreshThumbs(); } },
+    '-',
+    ...(n > 1 ? [{ label: 'Delete page…', icon: 'trash', danger: true, id: 'pmDel', onClick: async () => {
+      if (await confirmDialog('Delete page?', `Page ${i + 1} and its ink and photos will be removed. You can undo this.`)) { editor.deletePage(i); refreshThumbs(); }
+    } }] : []),
+  ], { width: 260, align: 'start' });
+}
+// pointer handling: tap / long-press menu / long-press drag with auto-scroll
+let pageDrag = null, pressT = null, press = null;
+const LONG_MS = 450;
+$('#thumbs').addEventListener('pointerdown', (e) => {
   const item = e.target.closest('.thumb-item');
-  if (!item) return;
-  const i = +item.dataset.i;
-  if (e.target.closest('.thumb-del')) {
-    if (await confirmDialog('Delete page?', `Page ${i + 1} and its ink will be removed. You can undo this.`)) { editor.deletePage(i); refreshThumbs(true); }
+  if (!item || (e.pointerType === 'mouse' && e.button)) return;
+  press = { item, id: e.pointerId, x: e.clientX, y: e.clientY, long: false };
+  clearTimeout(pressT);
+  pressT = setTimeout(() => { if (press && press.item === item) { press.long = true; item.classList.add('lifted'); navigator.vibrate?.(8); } }, LONG_MS);
+});
+function startPageDrag(e) {
+  const list = $('#thumbs .thumb-list'), item = press.item;
+  const r = item.getBoundingClientRect();
+  const ghost = item.cloneNode(true); ghost.classList.add('thumb-ghost');
+  const gc = $('canvas', ghost), oc = $('canvas', item); gc.width = oc.width; gc.height = oc.height; gc.getContext('2d').drawImage(oc, 0, 0);
+  Object.assign(ghost.style, { width: r.width + 'px', left: r.left + 'px', top: r.top + 'px' });
+  document.body.appendChild(ghost);
+  item.classList.add('dragging');
+  pageDrag = { from: +item.dataset.i, to: +item.dataset.i, ghost, dy: e.clientY - r.top, dx: e.clientX - r.left, list, raf: 0, y: e.clientY, x: e.clientX };
+  autoScroll();
+}
+function autoScroll() {
+  if (!pageDrag) return;
+  const L = pageDrag.list.getBoundingClientRect(), y = pageDrag.y, edge = 56;
+  const v = y < L.top + edge ? -Math.ceil((L.top + edge - y) / 4) : y > L.bottom - edge ? Math.ceil((y - (L.bottom - edge)) / 4) : 0;
+  if (v) { pageDrag.list.scrollTop += v; placeDrop(); }
+  pageDrag.raf = requestAnimationFrame(autoScroll);
+}
+function placeDrop() {
+  const d = pageDrag, items = $$('.thumb-item', d.list);
+  const grid = getComputedStyle(d.list).display === 'grid';
+  // nearest page to the finger; before/after by the half it's on (rows in the list, columns in the iPhone grid)
+  let best = null, bd = Infinity;
+  for (const it of items) {
+    const r = it.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const dist = Math.hypot((d.x - cx) * (grid ? 1 : 0.2), d.y - cy);
+    if (dist < bd) { bd = dist; best = { it, r, cx, cy }; }
+  }
+  const k = +best.it.dataset.i;
+  const after = grid ? (Math.abs(d.y - best.cy) > best.r.height / 2 ? d.y > best.cy : d.x > best.cx) : d.y > best.cy;
+  const ins = k + (after ? 1 : 0);
+  d.to = ins > d.from ? ins - 1 : ins;
+  for (const it of items) it.classList.remove('drop-before', 'drop-after');
+  if (d.to !== d.from) best.it.classList.add(after ? 'drop-after' : 'drop-before');
+}
+addEventListener('pointermove', (e) => {
+  if (!press || e.pointerId !== press.id) return;
+  const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y);
+  if (!press.long) { if (moved > 10) { clearTimeout(pressT); press = null; } return; } // a scroll
+  if (!pageDrag && moved > 6) startPageDrag(e);
+  if (pageDrag) { e.preventDefault(); pageDrag.y = e.clientY; pageDrag.x = e.clientX; pageDrag.ghost.style.top = (e.clientY - pageDrag.dy) + 'px'; pageDrag.ghost.style.left = (e.clientX - pageDrag.dx) + 'px'; placeDrop(); }
+}, { passive: false });
+// iOS: once the long-press lifted a page, stop the panel from scrolling under the finger
+$('#thumbs').addEventListener('touchmove', (e) => { if (press && press.long) e.preventDefault(); }, { passive: false });
+const endPress = (e, cancel) => {
+  if (!press || e.pointerId !== press.id) return;
+  clearTimeout(pressT);
+  const p = press; press = null;
+  p.item.classList.remove('lifted');
+  if (pageDrag) {
+    const d = pageDrag; pageDrag = null;
+    cancelAnimationFrame(d.raf); d.ghost.remove(); $$('.drop-before, .drop-after', d.list).forEach((x) => x.classList.remove('drop-before', 'drop-after')); p.item.classList.remove('dragging');
+    if (!cancel && d.to !== d.from && editor.movePage(d.from, d.to)) toast(`Moved page ${d.from + 1} to ${d.to + 1}`);
+    refreshThumbs();
     return;
   }
-  editor.scrollToPage(i);
+  if (cancel) return;
+  if (p.long) pageMenu(p.item);
+  else jumpTo(+p.item.dataset.i);
+};
+addEventListener('pointerup', (e) => endPress(e, false));
+addEventListener('pointercancel', (e) => endPress(e, true));
+$('#thumbs').addEventListener('contextmenu', (e) => e.preventDefault());
+$('#thumbs').addEventListener('click', (e) => {
+  if (e.target.closest('#thumbsClose')) return setPagesOpen(false);
+  if (e.target.closest('#thumbAdd')) { const i = editor.addPage(current.body.pages.length - 1); refreshThumbs(); jumpTo(i); }
 });
+// finger swipe in from the left edge opens the panel (Pencil is ignored; the edge strip is kept away from drawing)
+(() => {
+  const EDGE = 22;
+  let sw = null;
+  $('#docScroll').addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch' || pagesOpen()) return;
+    const left = $('#docScroll').getBoundingClientRect().left;
+    if (e.clientX - left > EDGE) return;
+    sw = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    e.stopPropagation(); // this touch is the swipe, not ink / pan
+  }, true);
+  addEventListener('pointermove', (e) => {
+    if (!sw || e.pointerId !== sw.id) return;
+    const dx = e.clientX - sw.x, dy = Math.abs(e.clientY - sw.y);
+    if (dy > 40 && dy > dx) { sw = null; return; }
+    if (dx > 44 && dy < dx * 0.6) { sw = null; setPagesOpen(true); }
+  });
+  addEventListener('pointerup', (e) => { if (sw && e.pointerId === sw.id) sw = null; });
+  addEventListener('pointercancel', (e) => { if (sw && e.pointerId === sw.id) sw = null; });
+})();
+window.__inkwell.pages = { open: setPagesOpen, refresh: refreshThumbs };
 
 /* ---------------- editor "more" menu ---------------- */
 $('#edMoreBtn').addEventListener('click', (e) => {
@@ -1599,8 +1720,12 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10h';
+const APP_VERSION = '2026.10.10i';
 const CHANGES = [
+  ['2026.10.10i', [
+    'Page sidebar in notes: tap the Pages button or swipe in from the left edge with a finger. Tap a page to jump to it; long-press for Duplicate, Insert blank page before / after, Delete; long-press and drag to reorder (the list scrolls when you drag to its edge). Undo works for all of it.',
+    'Works with PDF pages too: reordering or deleting only changes the page order; the original PDF is never modified. Ink, photos and recording timestamps move with their page.',
+  ]],
   ['2026.10.10h', [
     'Inkwell Inbox: save PDFs, photos or Notability exports into the “Inkwell Inbox” folder in Google Drive (for example from the Files app). Inkwell offers to import new ones when you open it — “N new in Inbox · Import” — into the current folder or one you choose. Photos become a note with the photo.',
     'Set it up once in Settings → Inkwell Inbox (creates the folder; “Open in Drive” jumps to it). ⚙ menu → Check Inbox any time. Inkwell only reads that folder; it never moves or deletes files.',
