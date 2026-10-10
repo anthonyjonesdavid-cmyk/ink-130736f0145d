@@ -572,3 +572,12 @@ body.privacy #privacyCover { display: grid; }
 .bk-list { display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow-y: auto; }
 .bk-item { min-height: 48px; display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; border-radius: 12px; background: rgba(127,127,127,.12); text-align: left; }
 .bk-item small { color: var(--ink2); }
+
+/* card: title, then the original date in small grey, then a compact line */
+.card-created { font-size: 12px; color: var(--ink2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-info .card-meta { font-size: 11.5px; color: var(--ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.info-list { display: flex; flex-direction: column; gap: 2px; }
+.info-row { display: flex; justify-content: space-between; gap: 16px; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 15px; }
+.info-row span { color: var(--ink2); }
+.info-row b { text-align: right; font-weight: 600; }
+.info-row small { display: block; font-weight: 400; color: var(--ink3); font-size: 12px; }

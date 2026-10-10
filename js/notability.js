@@ -5,6 +5,7 @@
 // Native .note archives (Session.plist, no PDF) aren't supported: we say so and suggest the PDF + audio export.
 import { isZip, listZip, readEntry } from './unzip.js';
 import * as store from './store.js';
+import { pickCreated, m4aCreated } from './dates.js';
 
 export const looksNotability = (bytes, name = '') => isZip(bytes) || /\.(note|zip)$/i.test(name);
 
@@ -51,7 +52,7 @@ export async function readNotabilityZip(bytes) {
     const recs = ents.filter((e) => e.name.startsWith(dir + 'Recordings/') && /\.(m4a|mp4|aac|caf|wav|mp3)$/i.test(e.name))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     const title = p.name.slice(dir.length).replace(/\.pdf$/i, '');
-    notes.push({ title, pdf: await readEntry(bytes, p), recordings: await Promise.all(recs.map(async (r) => ({ name: r.name.slice(r.name.lastIndexOf('/') + 1), bytes: await readEntry(bytes, r) }))) });
+    notes.push({ title, zipTime: p.mtime, pdf: await readEntry(bytes, p), recordings: await Promise.all(recs.map(async (r) => ({ name: r.name.slice(r.name.lastIndexOf('/') + 1), bytes: await readEntry(bytes, r) }))) });
   }
   return notes;
 }
@@ -63,8 +64,13 @@ export async function importNotability(bytes, name, folderId, driveId, importPdf
   const ids = [];
   for (const n of notes) {
     const id = await importPdf(n.pdf, (notes.length === 1 ? (name.replace(/\.(zip|note)$/i, '') || n.title) : n.title) + '.pdf', folderId, notes.length === 1 ? driveId : null);
+    const d = await store.loadDoc(id);
+    // original date: name of the zip/note, then the recordings' own creation time, then the PDF / zip dates
+    const got = pickCreated({ name: (notes.length === 1 ? name + " " : "") + n.title, audio: n.recordings.map((r) => m4aCreated(r.bytes)), pdf: d.meta.pdfCreated, zip: n.zipTime, importedAt: d.meta.createdAt })
+      || pickCreated({ name: n.title });
+    if (got) { d.meta.originalCreated = got.t; d.meta.createdSrc = got.src; }
+    d.meta.createdChecked = 2;
     if (n.recordings.length) {
-      const d = await store.loadDoc(id);
       d.body.recordings = d.body.recordings || [];
       for (const r of n.recordings) {
         const rid = store.uid();
@@ -74,8 +80,8 @@ export async function importNotability(bytes, name, folderId, driveId, importPdf
         d.body.recordings.push({ id: rid, startedAt: d.meta.createdAt, dur: m4aDuration(r.bytes), mime, size: r.bytes.length, title: r.name.replace(/\.[^.]+$/, ''), source: 'notability', unsynced: true });
       }
       d.meta.source = 'notability';
-      await store.saveDoc(d);
     }
+    await store.saveDoc(d);
     ids.push(id);
   }
   return ids;

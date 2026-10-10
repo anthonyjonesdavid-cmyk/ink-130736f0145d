@@ -29,7 +29,9 @@ export function listZip(d) {
       if (id === 1) { if (size === 0xffffffff) { size = u64(d, q); q += 8; } if (csize === 0xffffffff) { csize = u64(d, q); q += 8; } if (loff === 0xffffffff) { loff = u64(d, q); } }
       x += 4 + len;
     }
-    out.push({ name, method, csize, size, loff, dir: name.endsWith('/') });
+    const tm = u16(d, p + 12), dt = u16(d, p + 14); // DOS local time
+    const mtime = dt ? new Date(1980 + (dt >> 9), ((dt >> 5) & 15) - 1, dt & 31, tm >> 11, (tm >> 5) & 63, (tm & 31) * 2).getTime() : null;
+    out.push({ name, method, csize, size, loff, mtime, dir: name.endsWith('/') });
     p += 46 + nl + xl + cl;
   }
   return out;

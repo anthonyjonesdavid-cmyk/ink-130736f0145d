@@ -230,7 +230,26 @@ async function matches(rec, kind, key, plain) {
     return BYTES.has(kind) ? sameBytes(got, plain) : JSON.stringify(got) === JSON.stringify(plain);
   } catch { return false; }
 }
-async function rewriteDoc(id, toFolderId, { srcKey, dstKey }) {
+// moves/encryption and background meta patches run one at a time, so a patch never lands on a record mid-move
+let serialChain = Promise.resolve();
+const serial = (fn) => { const p = serialChain.then(fn, fn); serialChain = p.catch(() => {}); return p; };
+const rewriteDoc = (...a) => serial(() => rewriteDocNow(...a));
+// background metadata patch (e.g. original created date). Re-reads the record inside the queue and only writes when
+// the note is still where it was and its key is available; returns false otherwise.
+export function patchMeta(id, patch) {
+  return serial(async () => {
+    const rec = await db.get('docs', id);
+    if (!rec) return false;
+    if (rec.enc && !keys.has(rec.folderId)) return false;
+    const key = rec.enc ? keys.get(rec.folderId) : null;
+    const f = rec.folderId ? await db.get('folders', rec.folderId) : null;
+    if (!!(f && f.locked) !== !!rec.enc) return false; // folder state changing (encryption in progress): try later
+    const meta = { ...(await openJSON(rec, 'meta')), ...patch };
+    await db.put('docs', await sealJSON(key, 'meta', id, rec.folderId || null, meta));
+    return true;
+  });
+}
+async function rewriteDocNow(id, toFolderId, { srcKey, dstKey }) {
   const olds = await Promise.all(KINDS.map(([st]) => db.get(st, id)));
   if (!olds[0]) throw new Error('Note not found');
   // the note's records: docs/content/files share its id; each voice recording is its own 'audio' record

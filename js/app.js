@@ -9,6 +9,7 @@ import * as audio from './audio.js';
 import { trimBody, setTrim, isTrimmed } from './trim.js';
 import { importNotability, looksNotability } from './notability.js';
 import { isZip } from './unzip.js';
+import { pickCreated, parsePdfDate, m4aCreated } from './dates.js';
 import * as backup from './backup.js';
 import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest } from './drive.js';
 import {
@@ -117,13 +118,15 @@ async function makeThumb(meta, body, pdfDoc) {
 /* ---------------- library ---------------- */
 // sort / filter: remembered on this device, same for every folder
 const VIEW_KEY = 'inkwell.libView';
-const SORTS = [['name-az', 'Name (A–Z)'], ['name-za', 'Name (Z–A)'], ['added-new', 'Date added (newest)'], ['added-old', 'Date added (oldest)'], ['mod-new', 'Date modified (newest)'], ['mod-old', 'Date modified (oldest)']];
-let libView = (() => { try { const v = JSON.parse(localStorage.getItem(VIEW_KEY)); if (v && SORTS.some(([k]) => k === v.sort)) return v; } catch {} return { sort: 'mod-new', audio: false }; })();
+const SORTS = [['created-new', 'Date created (newest)'], ['created-old', 'Date created (oldest)'], ['name-az', 'Name (A–Z)'], ['name-za', 'Name (Z–A)'], ['added-new', 'Date added (newest)'], ['added-old', 'Date added (oldest)'], ['mod-new', 'Date modified (newest)'], ['mod-old', 'Date modified (oldest)']];
+let libView = (() => { try { const v = JSON.parse(localStorage.getItem(VIEW_KEY)); if (v && SORTS.some(([k]) => k === v.sort)) return v; } catch {} return { sort: 'created-new', audio: false }; })();
 let docsById = new Map();
 const setLibView = (patch) => { libView = { ...libView, ...patch }; try { localStorage.setItem(VIEW_KEY, JSON.stringify(libView)); } catch {} renderLibrary(); };
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 function sortDocs(docs) {
   const by = {
+    'created-new': (a, b) => createdOf(b) - createdOf(a),
+    'created-old': (a, b) => createdOf(a) - createdOf(b),
     'name-az': (a, b) => collator.compare(a.title || '', b.title || ''),
     'name-za': (a, b) => collator.compare(b.title || '', a.title || ''),
     'added-new': (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
@@ -209,10 +212,11 @@ async function renderLibrary() {
   for (const d of docs) {
     const badges = (d.kind === 'pdf' ? '<span class="badge">PDF</span>' : '')
       + (d.recCount ? `<span class="badge audio" title="${d.recCount} recording${d.recCount > 1 ? 's' : ''}">${icon('mic')}${d.recCount > 1 ? d.recCount : ''}</span>` : '');
-    const when = libView.sort.startsWith('added') ? (d.createdAt || d.updatedAt) : d.updatedAt;
+    const pages = `${d.pageCount || 1} ${d.pageCount === 1 ? 'page' : 'pages'}`;
+    const second = libView.sort.startsWith('added') ? `Added ${fmtDate(d.createdAt || d.updatedAt)} · ${pages}` : libView.sort.startsWith('mod') ? `Edited ${fmtDate(d.updatedAt)} · ${pages}` : pages;
     const card = h(`<div class="card" data-id="${d.id}">
       <button class="card-open" aria-label="Open ${esc(d.title)}"><div class="thumb ${d.thumb ? '' : 'empty'}">${d.thumb ? `<img src="${d.thumb}" alt="">` : icon(d.kind === 'pdf' ? 'pdf' : 'notes')}${badges ? `<span class="badges">${badges}</span>` : ''}</div></button>
-      <div class="card-info"><div class="card-title">${esc(d.title)}</div><div class="card-meta">${fmtDate(when)} · ${d.pageCount || 1} ${d.pageCount === 1 ? 'page' : 'pages'}</div></div>
+      <div class="card-info"><div class="card-title">${esc(d.title)}</div><div class="card-created">Created ${fmtDate(createdOf(d))}</div><div class="card-meta">${second}</div></div>
       <button class="card-more icon-btn sm" aria-label="More">${icon('more')}</button>
       <span class="sel-mark" aria-hidden="true">${icon('check')}</span>
     </div>`);
@@ -237,7 +241,7 @@ function renderLockScreen(f) {
     <div class="unlock-slot"></div>
     <p class="fine">${icon('shield')} AES-256 encryption · There is no passcode reset. If you forget it, these notes can't be recovered.</p>
   </div>`;
-  $('.unlock-slot', body).appendChild(buildUnlock(f, async () => { await resumeEncryptionIfNeeded(f.id); renderLibrary(); }));
+  $('.unlock-slot', body).appendChild(buildUnlock(f, async () => { await resumeEncryptionIfNeeded(f.id); renderLibrary(); setTimeout(backfillCreated, 800); }));
 }
 
 // Passcode / password entry with escalating lockout. Used by the lock screen and the "Move to" dialog.
@@ -345,6 +349,7 @@ function docMenu(anchor, id) {
   popover(anchor, [
     { label: 'Open', icon: 'notes', onClick: () => openDoc(id) },
     { label: 'Rename', icon: 'edit', onClick: () => renameDoc(id) },
+    { label: 'Info', icon: 'info', id: 'docInfo', onClick: () => docInfo(id) },
     { label: 'Move to…', icon: 'move', onClick: () => moveDoc(id) },
     { label: 'Export as PDF', icon: 'download', onClick: () => exportPdfById(id) },
     ...(docsById.get(id)?.kind === 'pdf' ? [docsById.get(id).trimmed
@@ -353,6 +358,21 @@ function docMenu(anchor, id) {
     '-',
     { label: 'Delete', icon: 'trash', danger: true, onClick: () => deleteDoc(id) },
   ]);
+}
+
+function docInfo(id) {
+  const d = docsById.get(id);
+  if (!d) return;
+  const full = (t) => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const src = { name: 'from the file name', audio: 'from the recording', pdf: 'from the PDF', zip: 'from the export file' }[d.createdSrc] || '';
+  const row = (k, v) => `<div class="info-row"><span>${k}</span><b>${v}</b></div>`;
+  modal({ title: d.title, cls: 'info-sheet', body: `<div class="info-list">
+    ${row('Created', esc(full(createdOf(d))) + (src ? `<small>${src}</small>` : ''))}
+    ${d.originalCreated ? row('Added to Inkwell', esc(full(d.createdAt))) : ''}
+    ${row('Last edited', esc(full(d.updatedAt)))}
+    ${row('Pages', d.pageCount || 1)}
+    ${d.recCount ? row('Recordings', d.recCount) : ''}
+    ${row('Type', d.kind === 'pdf' ? (d.source === 'notability' ? 'Notability import (PDF)' : 'PDF') : 'Notebook')}</div>` });
 }
 
 async function renameDoc(id) {
@@ -701,6 +721,45 @@ $('#pdfInput').addEventListener('change', async (e) => {
   if (files.length === 1 && lastId) openDoc(lastId); else renderLibrary();
 });
 
+// original "date created" (js/dates.js). createdChecked: 2 = done with every source we have.
+async function fillCreated(meta, pdfDoc, name, audio = []) {
+  try { const md = pdfDoc && await pdfDoc.getMetadata(); meta.pdfCreated = parsePdfDate(md?.info?.CreationDate) || undefined; } catch {}
+  const got = pickCreated({ name: name || meta.title, audio, pdf: meta.pdfCreated, importedAt: meta.createdAt });
+  if (got) { meta.originalCreated = got.t; meta.createdSrc = got.src; }
+  meta.createdChecked = 2;
+}
+const createdOf = (d) => d.originalCreated || d.createdAt || d.updatedAt;
+// notes imported before this release: fill in the original date once (meta only; locked folders when unlocked)
+let backfilling = false;
+async function backfillCreated() {
+  if (backfilling) return;
+  backfilling = true;
+  let changed = 0;
+  try {
+    const fids = [null, ...(await store.listFolders()).filter((f) => !f.locked || store.isUnlocked(f.id)).map((f) => f.id)];
+    for (const fid of fids) {
+      let docs; try { docs = await store.listDocs(fid); } catch { continue; }
+      for (const s of docs) {
+        if (s.kind !== 'pdf' || s.createdChecked === 2 || (current && current.id === s.id)) continue;
+        try {
+          const d = await store.loadDoc(s.id);
+          const audio = [];
+          for (const r of d.body.recordings || []) { try { const a = await store.loadAudio(r.id); if (a) audio.push(m4aCreated(a.bytes)); } catch {} }
+          let pdfDoc = null;
+          try { const bytes = await store.loadPdf(s.id); if (bytes) pdfDoc = await openPdf(bytes); } catch {}
+          const m = { createdAt: d.meta.createdAt, title: d.meta.title };
+          try { await fillCreated(m, pdfDoc, d.meta.title, audio); } finally { pdfDoc?.destroy(); }
+          const patch = { createdChecked: 2 };
+          for (const k of ['pdfCreated', 'originalCreated', 'createdSrc']) if (m[k] != null) patch[k] = m[k];
+          if (await store.patchMeta(d.id, patch) && patch.originalCreated) changed++;
+        } catch (e) { if (!e.locked) console.warn('date backfill', s.id, e); }
+      }
+    }
+  } finally { backfilling = false; }
+  if (changed && !current) renderLibrary();
+}
+window.__inkwell.backfillCreated = backfillCreated;
+
 // PDF or Notability export (zip: PDF + Recordings/*.m4a). Returns the (last) new note id.
 let lastNotabilityMsg = '';
 async function importAny(bytes, name, folderId, driveId) {
@@ -728,6 +787,7 @@ async function importPdf(bytes, name, folderId, driveId) {
       body: { pages: sizes.map((s, i) => ({ id: store.uid(), kind: 'pdf', pdfIndex: i, w: s.w, h: s.h, strokes: [] })) },
     };
     if (driveId) doc.meta.driveId = driveId; // lets Drive imports spot files already imported
+    await fillCreated(doc.meta, pdfDoc, name);
     try { await trimBody(doc.body, pdfDoc); } catch (e) { console.warn('trim on import', e); } // scans with a white sheet around the page
     doc.meta.trimChecked = true; doc.meta.trimmed = isTrimmed(doc.body);
     doc.meta.thumb = await makeThumb(doc.meta, doc.body, pdfDoc);
@@ -1290,8 +1350,12 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10c';
+const APP_VERSION = '2026.10.10d';
 const CHANGES = [
+  ['2026.10.10d', [
+    'Original dates for imported notes: each card now shows “Created …” in small grey under the name. For Notability and scanned PDFs it’s the real date, taken from the file name (“Note Sep 30, 2017 …”) or the recording; notes you already imported are updated automatically (locked folders once unlocked).',
+    'New sort: Date created (newest / oldest), now the default. ⋯ → Info shows created, added and last-edited dates.',
+  ]],
   ['2026.10.10c', [
     'Import Notability notes: Import PDF → From Files (or Google Drive) now also takes Notability exports (.zip with the PDF and its audio). Pages, handwriting and photos come in as the PDF; each recording becomes an Inkwell recording you can play, scrub and export.',
     'Notability’s export doesn’t say when each stroke was written, so imported audio isn’t synced to the ink (tap-to-hear works only for notes recorded in Inkwell). The recordings list says “not synced to ink”.',
@@ -1415,6 +1479,7 @@ document.addEventListener('visibilitychange', () => {
   else backup.maybeAuto();
 });
 setTimeout(() => { backup.preload(); backup.maybeAuto(); }, 1500); // app opened
+setTimeout(() => backfillCreated(), 2500);
 window.addEventListener('pagehide', () => relockAll());
 
 /* ---------------- misc platform glue ---------------- */
