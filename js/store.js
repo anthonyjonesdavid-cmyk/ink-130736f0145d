@@ -236,7 +236,7 @@ const serial = (fn) => { const p = serialChain.then(fn, fn); serialChain = p.cat
 const rewriteDoc = (...a) => serial(() => rewriteDocNow(...a));
 // background metadata patch (e.g. original created date). Re-reads the record inside the queue and only writes when
 // the note is still where it was and its key is available; returns false otherwise.
-export function patchMeta(id, patch) {
+export function patchMeta(id, patch, { force = false } = {}) {
   return serial(async () => {
     const rec = await db.get('docs', id);
     if (!rec) return false;
@@ -244,7 +244,11 @@ export function patchMeta(id, patch) {
     const key = rec.enc ? keys.get(rec.folderId) : null;
     const f = rec.folderId ? await db.get('folders', rec.folderId) : null;
     if (!!(f && f.locked) !== !!rec.enc) return false; // folder state changing (encryption in progress): try later
-    const meta = { ...(await openJSON(rec, 'meta')), ...patch };
+    const old = await openJSON(rec, 'meta');
+    patch = { ...patch };
+    // a date the user set by hand is never overwritten by automatic detection
+    if (!force && old.createdSrc === 'edited') { delete patch.originalCreated; delete patch.createdSrc; }
+    const meta = { ...old, ...patch };
     await db.put('docs', await sealJSON(key, 'meta', id, rec.folderId || null, meta));
     return true;
   });

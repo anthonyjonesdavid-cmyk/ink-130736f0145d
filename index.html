@@ -15,7 +15,16 @@
 <link rel="icon" type="image/png" href="icon-192.png">
 <script>/* home-screen app? reserve room for the status bar (see --top in styles.css) */
 if (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches) document.documentElement.classList.add('standalone');</script>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=024c9dafc310" id="mainCss">
+<!-- critical editor layout travels with the HTML, so a stale cached styles.css can never put the page on top of the toolbar -->
+<style>
+#editor:not(.hidden) { display: flex; flex-direction: column; }
+#edBar { flex: none; position: relative; z-index: 20; display: block; min-height: 48px; }
+#editor.bar-hidden #edBar { display: none; }
+#docScroll { position: relative; inset: auto; flex: 1 1 auto; min-height: 0; overflow: auto; }
+#barRestore { position: fixed; z-index: 2147483001; top: calc(var(--top, 28px) + 6px); right: 8px; width: 40px; height: 40px; border-radius: 20px; background: #2c2c2e; color: #fff; border: 1px solid rgba(255,255,255,.25); }
+#barRestore[hidden] { display: none; }
+</style>
 <title>Inkwell</title>
 </head>
 <body>
@@ -112,6 +121,6 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
 <input type="file" id="pdfInput" class="file-input" accept="application/pdf,.pdf,application/zip,.zip,.note" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="photoInput" class="file-input" accept="image/*" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="backupInput" class="file-input" tabindex="-1" aria-hidden="true">
-<script type="module" src="js/app.js"></script>
+<script type="module" src="js/app.js?v=024c9dafc310"></script>
 </body>
 </html>

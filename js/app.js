@@ -384,16 +384,54 @@ function docInfo(id) {
   const d = docsById.get(id);
   if (!d) return;
   const full = (t) => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-  const src = { name: 'from the file name', audio: 'from the recording', pdf: 'from the PDF', zip: 'from the export file' }[d.createdSrc] || '';
+  const src = { name: 'from the file name', audio: 'from the recording', pdf: 'from the PDF', zip: 'from the export file', edited: 'edited by you' }[d.createdSrc] || '';
   const row = (k, v) => `<div class="info-row"><span>${k}</span><b>${v}</b></div>`;
-  modal({ title: d.title, cls: 'info-sheet', body: `<div class="info-list">
-    ${row('Created', esc(full(createdOf(d))) + (src ? `<small>${src}</small>` : ''))}
+  modal({ title: d.title, cls: 'info-sheet', onOpen: (w, close) => $('#infoCreated', w).addEventListener('click', () => { close(); editCreated(id); }), body: `<div class="info-list">
+    <button type="button" class="info-row info-edit" id="infoCreated" aria-label="Edit date created"><span>Created</span><b>${esc(full(createdOf(d)))}${src ? `<small>${src}</small>` : ''}<small class="info-tap">Tap to change</small></b></button>
     ${d.originalCreated ? row('Added to Inkwell', esc(full(d.createdAt))) : ''}
     ${row('Last edited', esc(full(d.updatedAt)))}
     ${row('Pages', d.pageCount || 1)}
     ${d.recCount ? row('Recordings', d.recCount) : ''}
     ${row('Type', d.kind === 'pdf' ? (d.source === 'notability' ? 'Notability import (PDF)' : 'PDF') : 'Notebook')}</div>` });
 }
+
+// edit "date created": native date+time picker; keeps the detected date so it can be restored
+const pad2 = (n) => String(n).padStart(2, '0');
+const toLocalInput = (t) => { const x = new Date(t); return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}T${pad2(x.getHours())}:${pad2(x.getMinutes())}`; };
+async function editCreated(id) {
+  const d = docsById.get(id);
+  if (!d) return;
+  const edited = d.createdSrc === 'edited';
+  const detected = edited ? d.detectedCreated : d.originalCreated;
+  const body = h(`<div class="form"><label class="field-label" for="createdInput">Date and time created</label>
+    <input type="datetime-local" class="field" id="createdInput" value="${toLocalInput(createdOf(d))}" max="${toLocalInput(Date.now() + 864e5)}">
+    <p class="err" id="cErr"></p></div>`);
+  const actions = [{ label: 'Cancel', value: null }];
+  if (edited) actions.push({ label: 'Reset to detected date', value: 'reset', id: 'createdReset' });
+  actions.push({ label: 'Save', kind: 'primary', value: 'save', validate: (w) => {
+    const v = $('#createdInput', w).value; const t = v ? new Date(v).getTime() : NaN;
+    if (!Number.isFinite(t)) { $('#cErr', w).textContent = 'Pick a date and time'; return false; }
+    return true; } });
+  let picked = null;
+  const res = await modal({ title: 'Date created', cls: 'created-sheet', body, actions,
+    onOpen: (w) => { const i = $('#createdInput', w); i.addEventListener('input', () => { picked = i.value; }); picked = i.value; } });
+  if (!res) return;
+  let patch;
+  if (res === 'save') {
+    const t = new Date(picked).getTime();
+    patch = { originalCreated: t, createdSrc: 'edited' };
+    if (!edited) { patch.detectedCreated = d.originalCreated ?? null; patch.detectedSrc = d.createdSrc ?? null; }
+  } else {
+    patch = { originalCreated: d.detectedCreated ?? undefined, createdSrc: d.detectedSrc ?? undefined, detectedCreated: undefined, detectedSrc: undefined };
+  }
+  try {
+    const ok = await store.patchMeta(id, patch, { force: true });
+    if (!ok) throw new Error('Couldn’t save the date (is the folder locked?)');
+    toast(res === 'save' ? 'Date created updated' : 'Back to the detected date');
+  } catch (e) { toast(e.locked ? 'Unlock the folder first' : e.message); }
+  await renderLibrary();
+}
+window.__inkwell.editCreated = editCreated;
 
 async function renameDoc(id) {
   const d = await store.loadDoc(id);
@@ -823,7 +861,7 @@ async function backfillCreated() {
     for (const fid of fids) {
       let docs; try { docs = await store.listDocs(fid); } catch { continue; }
       for (const s of docs) {
-        if (s.kind !== 'pdf' || s.createdChecked === 2 || (current && current.id === s.id)) continue;
+        if (s.kind !== 'pdf' || s.createdChecked === 2 || s.createdSrc === 'edited' || (current && current.id === s.id)) continue;
         try {
           const d = await store.loadDoc(s.id);
           const audio = [];
@@ -921,6 +959,7 @@ async function openDoc(id) {
     updateChrome();
     $('#editor').classList.toggle('opts-collapsed', !!settings.optsCollapsed);
     setBarHidden(false);
+    requestAnimationFrame(() => setTimeout(barFailsafe, 50));
     editor.open(d);
     audio.onOpen();
   } catch (e) {
@@ -1021,13 +1060,35 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
   if (remember) { settings.optsCollapsed = !!on; saveSettings(); }
   barH();
 }
+// failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
+// cache and always offer the restore button
+const CSS_BUILD = '2026.10.10f';
+function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
+function reloadCss() {
+  const l = $('#mainCss'); if (!l || l.dataset.busted) return;
+  l.dataset.busted = '1'; l.href = 'styles.css?v=' + Date.now();
+  l.addEventListener('load', () => { barH(); setTimeout(barFailsafe, 100); }, { once: true });
+}
+function barVisible() {
+  const b = $('#edBar'); if (!b || $('#editor').classList.contains('hidden')) return true;
+  const r = b.getBoundingClientRect();
+  if (r.height < 40 || r.bottom <= 0) return false;
+  const el = document.elementFromPoint(Math.min(innerWidth - 2, r.left + 30), r.top + Math.min(24, r.height / 2));
+  return !!el && (b.contains(el) || el.id === 'topBand');
+}
+function barFailsafe() {
+  if ($('#editor').classList.contains('hidden') || $('#editor').classList.contains('bar-hidden')) return;
+  if (!cssFresh()) reloadCss();
+  if (!barVisible()) { console.warn('toolbar not visible: showing restore button'); $('#barRestore').hidden = false; }
+}
+window.__inkwell.barFailsafe = barFailsafe;
 function setBarHidden(on) {
   $('#editor').classList.toggle('bar-hidden', !!on);
   $('#barRestore').hidden = !on;
   barH();
 }
 $('#optsHideBtn').addEventListener('click', () => setOptsCollapsed(true));
-$('#barRestore').addEventListener('click', () => setBarHidden(false));
+$('#barRestore').addEventListener('click', () => { setBarHidden(false); reloadCss(); setTimeout(barFailsafe, 300); });
 // start writing with the Pencil -> fold the options away, but only when the page can stay exactly in place
 $('#docScroll').addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'pen' || $('#editor').classList.contains('opts-collapsed')) return;
@@ -1467,8 +1528,12 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10e';
+const APP_VERSION = '2026.10.10f';
 const CHANGES = [
+  ['2026.10.10f', [
+    'Fix: after the 2026.10.10e update some iPads showed no toolbar in notes (an old cached stylesheet let the page cover the bar). Inkwell now always loads matching files, and if the toolbar is ever hidden a button in the top-right corner brings it back.',
+    'Edit a note’s date created: ⋯ → Info → tap Created to pick a date and time. Your date is kept (automatic detection never changes it) and “Reset to detected date” brings the original back.',
+  ]],
   ['2026.10.10e', [
     'The note toolbar is now a solid bar docked at the top: the page starts below it, so nothing covers your PDF at any zoom or scroll.',
     'Colours and sizes sit in a second row of the bar. Tap the active tool again (or the ⌃ at the end of the row) to hide it; Inkwell remembers. It also folds away when you start writing, without moving the page.',
@@ -1611,6 +1676,13 @@ document.addEventListener('gesturechange', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW', e));
+  // a new service worker took over: reload once so HTML, CSS and JS all come from the same build
+  let swReloaded = false;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || swReloaded || sessionStorage.getItem('inkwell-sw-reload') === APP_VERSION) return;
+    swReloaded = true; sessionStorage.setItem('inkwell-sw-reload', APP_VERSION); location.reload();
+  });
 }
 if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) requestPersist();
 

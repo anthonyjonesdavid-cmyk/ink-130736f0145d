@@ -1,6 +1,6 @@
 // Offline support with a network-first app shell so a reload picks up UI updates.
 // Static vendor files stay cache-first.
-const VERSION = 'inkwell-202fc652a239';
+const VERSION = 'inkwell-024c9dafc310';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest', 'sw.js',
   'js/app.js', 'js/editor.js', 'js/store.js', 'js/db.js', 'js/crypto.js', 'js/render.js', 'js/pdf.js',
@@ -19,7 +19,8 @@ const ASSETS = [
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then(async (c) => {
-    await Promise.all(ASSETS.map((path) => c.add(path).catch(() => {})));
+    // cache: 'reload' skips the browser's HTTP cache so a new build never mixes with old files
+    await Promise.all(ASSETS.map((path) => c.add(new Request(path, { cache: 'reload' })).catch(() => {})));
   }).then(() => self.skipWaiting()));
 });
 
@@ -45,7 +46,7 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== location.origin) return;
   if (req.mode === 'navigate' || isShell(url)) {
     e.respondWith(
-      fetch(req).then((res) => {
+      fetch(req, { cache: 'no-cache' }).then((res) => {
         if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
         return res;
       }).catch(() => caches.match(req, { ignoreSearch: true }).then((hit) => hit || caches.match('index.html')))

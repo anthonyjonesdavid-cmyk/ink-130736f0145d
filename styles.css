@@ -1,4 +1,4 @@
-:root {
+:root { --css-build: '2026.10.10f';
   --bg: #111113;
   --panel: #1c1c1e;
   --side: #18181b;
@@ -609,3 +609,8 @@ body.privacy #privacyCover { display: grid; }
 .nav-more:active { background: rgba(255,255,255,.08); }
 .nav-item .nav-count { margin-left: auto; }
 .nav-item .nav-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Info sheet: tappable Created row */
+.info-row.info-edit { width: 100%; min-height: 44px; text-align: left; color: inherit; font: inherit; border-radius: 10px; cursor: pointer; }
+.info-row.info-edit:active { background: rgba(255,255,255,.06); }
+.info-row .info-tap { color: var(--accent); }
+.created-sheet input[type=datetime-local] { min-height: 44px; width: 100%; color-scheme: dark; }
