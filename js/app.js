@@ -208,7 +208,6 @@ async function renderLibrary() {
   $('#sectionSub').textContent = baseSub;
   body.innerHTML = '';
   const grid = h('<div class="grid"></div>');
-  grid.appendChild(h(`<button class="card new-card" id="newCard"><div class="thumb">${icon('plus')}</div><div class="card-info"><div class="card-title">New Note</div><div class="card-meta">Blank notebook</div></div></button>`));
   for (const d of docs) {
     const badges = (d.kind === 'pdf' ? '<span class="badge">PDF</span>' : '')
       + (d.recCount ? `<span class="badge audio" title="${d.recCount} recording${d.recCount > 1 ? 's' : ''}">${icon('mic')}${d.recCount > 1 ? d.recCount : ''}</span>` : '');
@@ -228,7 +227,8 @@ async function renderLibrary() {
   for (const id of [...selected]) if (!shownIds.includes(id)) selected.delete(id);
   syncSelect();
   if (!docs.length && libView.audio && total) body.appendChild(h(`<div class="empty-hint">${icon('mic')}<p>No notes with audio here. Turn off the “Has audio” filter in the ${icon('settings')} menu to see all notes.</p></div>`));
-  else if (!docs.length) body.appendChild(h(`<div class="empty-hint">${icon('pen')}<p>${f ? 'This folder is empty.' : 'No notes yet.'} Create a notebook or import a PDF to start writing with Apple Pencil.</p></div>`));
+  else if (!docs.length) body.appendChild(h(`<div class="empty-state">${icon('pen')}<h3>${f ? 'This folder is empty' : 'No notes yet'}</h3><p>Create a notebook or import a PDF to write on with Apple Pencil.</p>
+    <div class="empty-actions"><button type="button" class="btn primary" id="emptyNewBtn">${icon('plus')}<span>New Note</span></button></div></div>`));
 }
 
 function renderLockScreen(f) {
@@ -356,7 +356,7 @@ $('#folderNav').addEventListener('contextmenu', (e) => { if (e.target.closest('.
 $('#folderNav').addEventListener('keydown', (e) => { const b = e.target.closest('.nav-item'); if (b && e.target === b && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goSection(b.dataset.section || null); } });
 
 $('#libBody').addEventListener('click', (e) => {
-  if (e.target.closest('#newCard')) return selecting ? null : newNote();
+  if (e.target.closest('#emptyNewBtn')) return selecting ? null : newNote();
   const card = e.target.closest('.card[data-id]');
   if (!card) return;
   const id = card.dataset.id;
@@ -1062,7 +1062,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.10f';
+const CSS_BUILD = '2026.10.10g';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1528,8 +1528,11 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10f';
+const APP_VERSION = '2026.10.10g';
 const CHANGES = [
+  ['2026.10.10g', [
+    'The dashed “New Note” tile is gone from the notes grid; use the New Note button at the top (the + on iPhone). An empty folder shows a New Note button in the middle.',
+  ]],
   ['2026.10.10f', [
     'Fix: after the 2026.10.10e update some iPads showed no toolbar in notes (an old cached stylesheet let the page cover the bar). Inkwell now always loads matching files, and if the toolbar is ever hidden a button in the top-right corner brings it back.',
     'Edit a note’s date created: ⋯ → Info → tap Created to pick a date and time. Your date is kept (automatic detection never changes it) and “Reset to detected date” brings the original back.',
