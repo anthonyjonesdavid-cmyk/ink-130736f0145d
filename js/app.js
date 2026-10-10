@@ -9,9 +9,9 @@ import * as audio from './audio.js';
 import { trimBody, setTrim, isTrimmed } from './trim.js';
 import { importNotability, looksNotability } from './notability.js';
 import { isZip } from './unzip.js';
-import { pickCreated, parsePdfDate, m4aCreated } from './dates.js';
+import { pickCreated, parsePdfDate, m4aCreated, dateFromName } from './dates.js';
 import * as backup from './backup.js';
-import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest } from './drive.js';
+import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest, checkInbox, importInbox, markInboxImported, inboxState, inboxUrl, inboxHasToken } from './drive.js';
 import {
   renderPageInto, PAPER_STYLES, PAPER_COLORS, PEN_COLORS, PEN_SIZES, HL_COLORS, HL_SIZES, ERASER_SIZES, drawPaper, isDark, hexToRgb, loadGrain, presetFor,
 } from './render.js';
@@ -146,6 +146,7 @@ function libMenu(anchor) {
     { label: 'Has audio', icon: 'mic', id: 'filter-audio', checked: !!libView.audio, onClick: () => setLibView({ audio: !libView.audio }) },
     '-',
     ...(pdfs.length ? [{ label: 'Trim white borders on PDFs', icon: 'crop', id: 'trimAll', onClick: () => trimAll(pdfs.map((d) => d.id)) }] : []),
+    { label: 'Check Inbox', icon: 'inbox', id: 'checkInbox', onClick: () => { preloadDrive(); checkInbox({ interactive: true }); } },
     { label: 'Settings…', icon: 'settings', id: 'openSettings', onClick: openSettings },
   ], { width: 290 });
 }
@@ -892,8 +893,32 @@ async function importAny(bytes, name, folderId, driveId) {
     lastNotabilityMsg = n ? ` with ${n} recording${n > 1 ? 's' : ''} (audio isn’t synced to the writing)` : '';
     return ids[ids.length - 1];
   }
+  if (isImageFile(bytes, name)) return importImage(bytes, name, folderId, driveId);
   if (/\.note$/i.test(name)) throw Object.assign(new Error('This .note file isn’t a zip Inkwell can read.'), { notability: 'bad' });
   return importPdf(bytes, name, folderId, driveId);
+}
+
+// images (Inkwell Inbox): one photo -> a new note with the photo on its first page
+function isImageFile(b, name) {
+  if (/\.(jpe?g|png|heic|heif|webp|gif)$/i.test(name)) return true;
+  if (!b || b.length < 12) return false;
+  return (b[0] === 0xff && b[1] === 0xd8) || (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e) || (String.fromCharCode(...b.subarray(4, 8)) === 'ftyp' && /hei|mif/.test(String.fromCharCode(...b.subarray(8, 12))));
+}
+async function importImage(bytes, name, folderId, driveId) {
+  const ph = await photoToJpeg(new Blob([bytes]));
+  const now = Date.now(), W = 612, H = 792, m = 36;
+  const s = Math.min((W - 2 * m) / ph.w, (H - 2 * m) / ph.h);
+  const w = Math.round(ph.w * s), hh = Math.round(ph.h * s), key = store.uid();
+  const doc = {
+    id: store.uid(), folderId,
+    meta: { title: name.replace(/\.[a-z0-9]+$/i, '') || 'Photo', kind: 'notebook', paper: { ...settings.paper, style: 'plain' }, createdAt: now, updatedAt: now, pageCount: 1, thumb: null },
+    body: { assets: { [key]: ph.url }, pages: [{ id: store.uid(), kind: 'paper', w: W, h: H, strokes: [], images: [{ id: store.uid(), src: key, x: Math.round((W - w) / 2), y: m, w, h: hh }] }] },
+  };
+  if (driveId) doc.meta.driveId = driveId;
+  const dn = dateFromName(name); if (dn) { doc.meta.originalCreated = dn; doc.meta.createdSrc = 'name'; }
+  doc.meta.thumb = await makeThumb(doc.meta, doc.body, null);
+  await store.saveDoc(doc);
+  return doc.id;
 }
 
 // shared by Files and Google Drive imports: one PDF -> one document in the given folder
@@ -937,9 +962,55 @@ initDrive({
     }
     return ids;
   },
-  importBytes: async (bytes, name, folderId, driveId) => { const id = await importAny(bytes, name, folderId, driveId); if (!current) renderLibrary(); return id; },
+  importBytes: async (bytes, name, folderId, driveId) => { const id = await importAny(bytes, name, folderId, driveId); markInboxImported(driveId); if (!current) renderLibrary(); return id; },
+  inboxFound: (items, { interactive }) => showInboxBar(items, interactive),
   done: (ids, n) => { if (ids.length === 1 && n === 1 && !current) openDoc(ids[0]); else if (!current) renderLibrary(); },
 });
+
+/* ---------------- Inkwell Inbox bar ---------------- */
+let inboxItems = [];
+function showInboxBar(items, interactive) {
+  inboxItems = items;
+  const bar = $('#inboxBar');
+  if (!items.length) { bar.hidden = true; if (interactive) toast('Inkwell Inbox: nothing new'); return; }
+  const n = items.length;
+  const here = section && folders.find((f) => f.id === section);
+  bar.innerHTML = `${icon('inbox')}<span class="ib-text"><b>${n} new</b> in Inbox</span>
+    <button type="button" class="btn primary" id="ibImport">Import${here ? ` to “${esc(here.name.length > 14 ? here.name.slice(0, 13) + '…' : here.name)}”` : ''}</button>
+    <button type="button" class="icon-btn" id="ibWhere" aria-label="Choose folder">${icon('folder')}</button>
+    <button type="button" class="icon-btn" id="ibX" aria-label="Not now">${icon('x')}</button>`;
+  bar.hidden = false;
+}
+async function inboxImportTo(folderId) {
+  const items = inboxItems; $('#inboxBar').hidden = true;
+  const f = folderId && folders.find((x) => x.id === folderId);
+  if (f && f.locked && !store.isUnlocked(f.id) && !(await askFolderPassword(f))) { $('#inboxBar').hidden = false; return; }
+  await importInbox(items, folderId || null);
+  const left = await checkInbox({ interactive: false });
+  if (left && left.length) toast(`${left.length} couldn’t be imported; they stay in the Inbox`, 4000);
+}
+$('#inboxBar').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.id === 'ibX') { $('#inboxBar').hidden = true; return; }
+  if (b.id === 'ibImport') return inboxImportTo(section);
+  if (b.id === 'ibWhere') popover(b, [{ head: 'Import into' }, { label: 'Notes', icon: 'notes', id: 'ibTo-root', onClick: () => inboxImportTo(null) },
+    ...folders.map((f) => ({ label: f.name, icon: f.locked ? 'lock' : 'folder', id: 'ibTo-' + f.id, onClick: () => inboxImportTo(f.id) }))], { width: 240 });
+});
+// app opened / brought back: with a live Google token check silently; without one, at most once a day offer a
+// one-tap Check (the Google window can only open from a tap)
+function inboxOnOpen() {
+  const s = inboxState();
+  if (!s.folderId || !navigator.onLine) return;
+  if (Date.now() - (s.lastCheck || 0) < 5 * 60e3) return;
+  if (inboxHasToken()) { checkInbox(); return; }
+  if (Date.now() - (s.lastCheck || 0) < 20 * 3600e3 || !$('#inboxBar').hidden) return;
+  preloadDrive();
+  const bar = $('#inboxBar');
+  bar.innerHTML = `${icon('inbox')}<span class="ib-text">Check Inkwell Inbox for new files?</span><button type="button" class="btn primary" id="ibCheck">Check</button><button type="button" class="icon-btn" id="ibX" aria-label="Not now">${icon('x')}</button>`;
+  bar.hidden = false;
+}
+$('#inboxBar').addEventListener('click', (e) => { if (e.target.closest('#ibCheck')) { $('#inboxBar').hidden = true; checkInbox({ interactive: true }); } });
+window.__inkwell.inbox = { check: (o) => checkInbox(o), state: inboxState };
 
 /* ---------------- open / close a note ---------------- */
 async function openDoc(id) {
@@ -1062,7 +1133,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.10g';
+const CSS_BUILD = '2026.10.10h';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1528,8 +1599,12 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10g';
+const APP_VERSION = '2026.10.10h';
 const CHANGES = [
+  ['2026.10.10h', [
+    'Inkwell Inbox: save PDFs, photos or Notability exports into the “Inkwell Inbox” folder in Google Drive (for example from the Files app). Inkwell offers to import new ones when you open it — “N new in Inbox · Import” — into the current folder or one you choose. Photos become a note with the photo.',
+    'Set it up once in Settings → Inkwell Inbox (creates the folder; “Open in Drive” jumps to it). ⚙ menu → Check Inbox any time. Inkwell only reads that folder; it never moves or deletes files.',
+  ]],
   ['2026.10.10g', [
     'The dashed “New Note” tile is gone from the notes grid; use the New Note button at the top (the + on iPhone). An empty folder shows a New Note button in the middle.',
   ]],
@@ -1595,6 +1670,12 @@ async function openSettings() {
       <p class="bk-status" id="sDriveStatus"></p>
       <div class="row" id="sDriveBtns"></div>
     </div>
+    <div class="set-group" id="sInbox">
+      <div class="set-title">${icon('inbox')} Inkwell Inbox (Google Drive)</div>
+      <p>Save PDFs, photos or Notability exports into the “Inkwell Inbox” folder in Google Drive (e.g. from the Files app). When you open Inkwell it offers to import new ones. Inkwell only reads that folder; it never moves or deletes your files.</p>
+      <p class="bk-status" id="sInboxStatus"></p>
+      <div class="row"><button class="btn primary" id="sInboxCheck">${icon('inbox')} ${inboxState().folderId ? 'Check Inbox' : 'Set up Inbox'}</button><a class="btn secondary" id="sInboxOpen" href="${inboxUrl()}" target="_blank" rel="noopener" ${inboxState().folderId ? '' : 'hidden'}>${icon('drive')} Open in Drive</a></div>
+    </div>
     <details class="set-group whatsnew"><summary class="set-title">What’s new · ${APP_VERSION}</summary>
       ${CHANGES.map(([v, items]) => `<p><b>${v}</b></p><ul>${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`).join('')}
     </details>
@@ -1625,6 +1706,14 @@ async function openSettings() {
     if (b.id === 'sBkRestore') backup.restoreFlow(() => renderLibrary());
   });
   $('#sImport', body).addEventListener('click', () => $('#backupInput').click());
+  const drawInbox = () => {
+    const s = inboxState();
+    $('#sInboxStatus', body).textContent = s.folderId ? `Folder ready${s.lastCheck ? ' · last checked ' + new Date(s.lastCheck).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''} · ${(s.done || []).length} imported` : 'Not set up yet — tap Set up Inbox to create the folder.';
+    const a = $('#sInboxOpen', body); a.href = inboxUrl(); a.hidden = !s.folderId;
+    $('#sInboxCheck', body).lastChild.textContent = s.folderId ? ' Check Inbox' : ' Set up Inbox';
+  };
+  drawInbox();
+  $('#sInboxCheck', body).addEventListener('click', () => { preloadDrive(); checkInbox({ interactive: true }).then(() => body.isConnected && drawInbox()); });
   modal({ title: 'Settings', body, actions: [{ label: 'Done', value: true, kind: 'primary' }] });
 }
 
@@ -1667,9 +1756,9 @@ async function relockAll() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { backup.onHidden(); relockAll(); }
-  else backup.maybeAuto();
+  else { backup.maybeAuto(); inboxOnOpen(); }
 });
-setTimeout(() => { backup.preload(); backup.maybeAuto(); }, 1500); // app opened
+setTimeout(() => { backup.preload(); backup.maybeAuto(); inboxOnOpen(); }, 1500); // app opened
 setTimeout(() => backfillCreated(), 2500);
 window.addEventListener('pagehide', () => relockAll());
 

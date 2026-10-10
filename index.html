@@ -15,7 +15,7 @@
 <link rel="icon" type="image/png" href="icon-192.png">
 <script>/* home-screen app? reserve room for the status bar (see --top in styles.css) */
 if (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches) document.documentElement.classList.add('standalone');</script>
-<link rel="stylesheet" href="styles.css?v=5294931a70dd" id="mainCss">
+<link rel="stylesheet" href="styles.css?v=8c874711486e" id="mainCss">
 <!-- critical editor layout travels with the HTML, so a stale cached styles.css can never put the page on top of the toolbar -->
 <style>
 #editor:not(.hidden) { display: flex; flex-direction: column; }
@@ -115,12 +115,13 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
   </section>
 </div>
 <div id="backupNag" class="backup-nag pillbar" hidden></div>
+<div id="inboxBar" class="backup-nag inbox-bar pillbar" role="status" hidden></div>
 <div id="modalRoot"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="privacyCover"><img src="icon-192.png" alt=""></div>
 <input type="file" id="pdfInput" class="file-input" accept="application/pdf,.pdf,application/zip,.zip,.note" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="photoInput" class="file-input" accept="image/*" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="backupInput" class="file-input" tabindex="-1" aria-hidden="true">
-<script type="module" src="js/app.js?v=5294931a70dd"></script>
+<script type="module" src="js/app.js?v=8c874711486e"></script>
 </body>
 </html>

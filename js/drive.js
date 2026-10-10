@@ -28,7 +28,11 @@ const ZIPS = ['application/zip', 'application/x-zip-compressed']; // Notability 
 const MAX_DEPTH = 4;                                     // subfolder levels listed under a picked folder
 const REDIRECT = new URL('./', location.href).href.split('#')[0].split('?')[0];
 
-let tok = null; // {t, exp}
+const FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'; // only to create the “Inkwell Inbox” folder
+const TOK_KEY = 'inkwell.driveTok';
+// {t, exp, inbox}. Kept in localStorage until it expires (≤ 1 h) so reopening Inkwell can check the Inbox without a pop-up.
+let tok = (() => { try { const v = JSON.parse(localStorage.getItem(TOK_KEY)); return v && v.exp > Date.now() + 60000 ? v : null; } catch { return null; } })();
+const keepTok = () => { try { tok ? localStorage.setItem(TOK_KEY, JSON.stringify(tok)) : localStorage.removeItem(TOK_KEY); } catch {} };
 let tokenClient = null, loadP = null, pickerReady = false, afterToken = null;
 let host = null; // { importBytes(bytes, name, folderId, driveId) -> id, folderId(), folderName(id), folderLocked(id), ensureFolder(name) -> id, importedDriveIds() -> Set, done(ids, n) }
 let busy = false;
@@ -110,11 +114,12 @@ function requestToken() {
   tokenClient.callback = (r) => {
     if (r.error) { signInHelp(r.error === 'access_denied' ? 'cancelled' : 'error', r.error_description || r.error); return; }
     if (!google.accounts.oauth2.hasGrantedAllScopes(r, SCOPE)) { signInHelp('scope'); return; }
-    tok = { t: r.access_token, exp: Date.now() + (+r.expires_in || 3600) * 1000 };
+    tok = { t: r.access_token, exp: Date.now() + (+r.expires_in || 3600) * 1000, inbox: wantInbox && google.accounts.oauth2.hasGrantedAllScopes(r, SCOPE, FILE_SCOPE) };
+    keepTok();
     (afterToken || showPicker)();
   };
   tokenClient.error_callback = (e) => signInHelp((e && e.type) || 'unknown');
-  try { tokenClient.requestAccessToken({ prompt: '', login_hint: LOGIN_HINT }); } catch { signInHelp('popup_failed_to_open'); }
+  try { tokenClient.requestAccessToken({ prompt: '', login_hint: LOGIN_HINT, ...(wantInbox ? { scope: SCOPE + ' ' + FILE_SCOPE, include_granted_scopes: true } : {}) }); } catch { signInHelp('popup_failed_to_open'); }
 }
 
 // pop-ups are unreliable in iPad Home Screen apps: explain, offer Try Again (+ same-window sign-in once allowed)
@@ -456,4 +461,74 @@ export async function importRemote(items, { openSingle = true } = {}) {
   await run(rows);
 }
 
-export const _test = { setToken: (t) => { tok = t ? { t, exp: Date.now() + 3600e3 } : null; }, get busy() { return busy; }, REDIRECT, SCOPE };
+/* ---------- Inkwell Inbox ----------
+   A Drive folder “Inkwell Inbox”. Files saved into it from other apps (iOS Files, Drive app) are NOT visible with
+   drive.file (that scope only covers files Inkwell created / the user picked), so the inbox is listed with drive.readonly
+   — the same scope Import from Google Drive already uses. drive.file is added only so Inkwell can create the folder.
+   Imported file ids are remembered on this device; files are never moved or deleted (read-only access). */
+const INBOX_NAME = 'Inkwell Inbox';
+const INBOX_KEY = 'inkwell.inbox';
+const INBOX_TYPES = ['application/pdf', ...ZIPS, 'application/octet-stream', 'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp', 'image/gif'];
+const INBOX_EXT = /\.(pdf|zip|note|jpe?g|png|heic|heif|webp|gif)$/i;
+let wantInbox = false;
+export const inboxState = () => { try { return JSON.parse(localStorage.getItem(INBOX_KEY)) || {}; } catch { return {}; } };
+const saveInbox = (p) => { const s = { ...inboxState(), ...p }; try { localStorage.setItem(INBOX_KEY, JSON.stringify(s)); } catch {} return s; };
+export const inboxUrl = () => inboxState().folderId ? `https://drive.google.com/drive/folders/${inboxState().folderId}` : 'https://drive.google.com/drive/my-drive';
+export function markInboxImported(id) { if (!id) return; const s = inboxState(); const done = new Set(s.done || []); done.add(id); saveInbox({ done: [...done].slice(-2000) }); }
+export const inboxHasToken = () => !!(tokOK() && tok.inbox);
+async function gapiJson(path, opts = {}) {
+  const r = await fetch(API + path, { ...opts, headers: { Authorization: 'Bearer ' + tok.t, ...(opts.headers || {}) } });
+  if (r.status === 401) { tok = null; keepTok(); throw new HttpError(401, 'Google session expired'); }
+  if (!r.ok) throw new HttpError(r.status, 'Google Drive error ' + r.status);
+  return r.json();
+}
+const qq = (s) => encodeURIComponent(s);
+async function inboxFolder() {
+  const s = inboxState();
+  if (s.folderId) {
+    try { const f = await gapiJson(`/drive/v3/files/${s.folderId}?fields=id,trashed`); if (f.id && !f.trashed) return f.id; } catch (e) { if (e.status === 401) throw e; }
+  }
+  const found = await gapiJson(`/drive/v3/files?q=${qq(`name='${INBOX_NAME}' and mimeType='${FOLDER}' and trashed=false and 'root' in parents`)}&fields=files(id)&spaces=drive`);
+  let id = found.files && found.files[0] && found.files[0].id;
+  if (!id) id = (await gapiJson('/drive/v3/files?fields=id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: INBOX_NAME, mimeType: FOLDER }) })).id;
+  saveInbox({ folderId: id, on: true });
+  return id;
+}
+async function listNew() {
+  const fid = await inboxFolder();
+  const files = [];
+  let page = '';
+  do {
+    const r = await gapiJson(`/drive/v3/files?q=${qq(`'${fid}' in parents and trashed=false and mimeType != '${FOLDER}'`)}&fields=nextPageToken,files(id,name,mimeType,size,createdTime)&pageSize=200&orderBy=createdTime${page ? '&pageToken=' + page : ''}`);
+    files.push(...(r.files || [])); page = r.nextPageToken || '';
+  } while (page);
+  const done = new Set(inboxState().done || []);
+  const have = await host.importedDriveIds();
+  saveInbox({ lastCheck: Date.now() });
+  return files.filter((f) => (INBOX_TYPES.includes(f.mimeType) || INBOX_EXT.test(f.name)) && !done.has(f.id) && !have.has(f.id))
+    .map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, size: +f.size || 0 }));
+}
+// interactive: from a tap (may open the Google window). Silent (app open): only with a live token.
+export async function checkInbox({ interactive = false } = {}) {
+  if (!navigator.onLine) { if (interactive) toast("You're offline. Connect to check the Inbox.", 3500); return null; }
+  if (!inboxHasToken()) {
+    if (!interactive) return null;
+    wantInbox = true;
+    return new Promise((res) => {
+      afterToken = async () => { wantInbox = false; afterToken = null; res(await checkInbox({ interactive: true })); };
+      if (ready()) requestToken(); else load().then(requestToken).catch(() => { toast("Couldn't reach Google. Try again.", 3500); res(null); });
+    });
+  }
+  try {
+    const items = await listNew();
+    host.inboxFound(items, { interactive });
+    return items;
+  } catch (e) {
+    console.warn('inbox', e);
+    if (interactive) toast(e.status === 401 ? 'Google session expired — tap Check Inbox again' : 'Couldn’t check the Inbox: ' + e.message, 4000);
+    return null;
+  }
+}
+export function importInbox(items, folderId) { return importRemote(items.map((it) => ({ ...it, folderId })), { openSingle: false }); }
+
+export const _test = { setToken: (t, inbox = false) => { tok = t ? { t, exp: Date.now() + 3600e3, inbox } : null; keepTok(); }, get busy() { return busy; }, REDIRECT, SCOPE };

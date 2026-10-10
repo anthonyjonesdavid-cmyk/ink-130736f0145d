@@ -1,4 +1,4 @@
-:root { --css-build: '2026.10.10g';
+:root { --css-build: '2026.10.10h';
   --bg: #111113;
   --panel: #1c1c1e;
   --side: #18181b;
@@ -623,3 +623,11 @@ body.privacy #privacyCover { display: grid; }
 .empty-state .btn { min-height: 44px; }
 .empty-state .btn span { display: inline !important; }
 .empty-state .btn { padding: 0 18px; gap: 8px; }
+
+/* Inkwell Inbox bar (non-blocking, bottom) */
+.inbox-bar { bottom: calc(var(--sab) + 16px); z-index: 41; }
+.backup-nag:not([hidden]) ~ .inbox-bar { bottom: calc(var(--sab) + 72px); }
+.inbox-bar .ib-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.inbox-bar .ic { flex: none; }
+.inbox-bar .btn { white-space: nowrap; padding: 0 14px; }
+@media (max-width: 500px) { .inbox-bar { left: 10px; right: 10px; transform: none; max-width: none; } .inbox-bar .ib-text { flex: 1; } .inbox-bar .btn span { display: inline; } }
