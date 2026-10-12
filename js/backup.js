@@ -118,10 +118,10 @@ async function upload() {
 // run a backup. interactive = called from a tap (may open the Google window); otherwise only with a live token.
 export function backupNow({ interactive = true } = {}) {
   if (running) return running;
-  if (!navigator.onLine) { save({ lastStatus: 'offline', lastTry: Date.now() }); if (interactive) toast('You’re offline — Inkwell will back up next time'); return Promise.resolve(false); }
+  if (!navigator.onLine) { save({ lastStatus: 'offline', lastTry: Date.now() }); if (interactive) toast('You’re offline — connect and tap Back up now again'); return Promise.resolve(false); }
   const getTok = interactive ? signIn() : (tokOK() ? Promise.resolve(tok.t) : Promise.reject(Object.assign(new Error('sign-in needed'), { auth: true })));
   running = getTok.then(async () => {
-    save({ on: true, granted: true, lastStatus: 'running', lastTry: Date.now() });
+    save({ granted: true, lastStatus: 'running', lastTry: Date.now() });
     const size = await upload();
     save({ lastAt: Date.now(), lastStatus: 'ok', lastSize: size, lastError: null });
     hideNag();
@@ -130,8 +130,7 @@ export function backupNow({ interactive = true } = {}) {
   }).catch((e) => {
     const needTap = !!e.auth;
     save({ lastStatus: needTap ? 'signin' : 'error', lastError: needTap ? null : e.message, lastTry: Date.now() });
-    if (needTap && state().on) showNag();
-    else if (interactive) toast('Backup failed: ' + e.message, 4000);
+    if (interactive) toast(needTap ? 'Google sign-in needed — tap Back up now again' : 'Backup failed: ' + e.message, 4000);
     return false;
   }).finally(() => { running = null; });
   return running;
@@ -143,10 +142,12 @@ export function turnOff() {
   try { if (t) google.accounts.oauth2.revoke(t, () => {}); } catch {}
 }
 // app going to the background: only a quick try if we still hold a token (iPadOS may suspend us any moment)
-export function onHidden() { if (isDue() && tokOK()) backupNow({ interactive: false }); }
+export function onHidden() {} // no automatic backups (2026.10.12)
 
 // app opened / brought back: back up if due (silently with a live token, else a small "tap to back up" bar)
 export function maybeAuto() {
+  return; // manual only
+  // eslint-disable-next-line no-unreachable
   if (!isDue()) return;
   if (tokOK()) backupNow({ interactive: false });
   else { load().catch(() => {}); showNag(); }
@@ -161,13 +162,19 @@ function showNag() {
 }
 function hideNag() { const n = $('#backupNag'); if (n) n.hidden = true; }
 
+// old builds had daily auto-backup ("on" + a nag bar): drop the flag, keep last-backup info and folder id
+export function cleanupAuto() {
+  hideNag();
+  const s = state();
+  if ('on' in s) { delete s.on; try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {} }
+}
 export function statusText(s = state()) {
-  if (!s.on) return 'Off';
+  if (!s.lastAt && !s.lastStatus) return 'No backup yet';
   const when = s.lastAt ? new Date(s.lastAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
   const st = s.lastStatus === 'running' ? 'Backing up…'
     : s.lastStatus === 'error' ? `<span class="err">Last try failed: ${esc(s.lastError || 'error')}</span>`
     : s.lastStatus === 'signin' ? '<span class="err">Needs a tap to sign in to Google again</span>'
-    : s.lastStatus === 'offline' ? '<span class="err">Was offline — will retry</span>'
+    : s.lastStatus === 'offline' ? '<span class="err">Was offline</span>'
     : s.lastAt ? 'OK' : '';
   return `Last backup: <b>${when}</b>${s.lastSize ? ` (${fmtBytes(s.lastSize)})` : ''}${st ? ' · ' + st : ''}`;
 }

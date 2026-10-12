@@ -1,4 +1,4 @@
-:root { --css-build: '2026.10.10i';
+:root { --css-build: '2026.10.10j';
   --bg: #111113;
   --panel: #1c1c1e;
   --side: #18181b;
@@ -656,3 +656,15 @@ body.privacy #privacyCover { display: grid; }
 .inbox-bar .ic { flex: none; }
 .inbox-bar .btn { white-space: nowrap; padding: 0 14px; }
 @media (max-width: 500px) { .inbox-bar { left: 10px; right: 10px; transform: none; max-width: none; } .inbox-bar .ib-text { flex: 1; } .inbox-bar .btn span { display: inline; } }
+/* Import from Inkwell Inbox sheet */
+.ib-tools { display: flex; gap: 8px; margin-bottom: 8px; }
+.ib-tools .btn { min-height: 40px; }
+.ib-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; }
+.ib-row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.ib-row:last-child { border-bottom: 0; }
+.ib-row input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
+.ib-row .ib-ic .ic { color: var(--ink2); }
+.ib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-row small { color: var(--ink3); flex: none; }
+.ib-dest { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.ib-dest select { flex: 1; min-height: 44px; }
