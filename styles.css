@@ -1,4 +1,4 @@
-:root { --css-build: '2026.10.10j';
+:root { --css-build: '2026.10.10k';
   --bg: #111113;
   --panel: #1c1c1e;
   --side: #18181b;
@@ -668,3 +668,6 @@ body.privacy #privacyCover { display: grid; }
 .ib-row small { color: var(--ink3); flex: none; }
 .ib-dest { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .ib-dest select { flex: 1; min-height: 44px; }
+/* shape snapping cue: the live stroke briefly fades in as the clean shape */
+.layer.live.snap-cue { animation: snapCue .22s ease-out; }
+@keyframes snapCue { from { opacity: .3; } to { opacity: 1; } }

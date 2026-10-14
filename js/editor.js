@@ -3,6 +3,7 @@ import {
   drawPaper, drawStroke, drawStrokes, strokePath2D, strokeOutline, outlineToPath, strokeHit, strokeBounds, hlBlend, hlAlpha, loadImage,
 } from './render.js';
 import { uid } from './store.js';
+import * as Shapes from './shapes.js';
 import { pageViewport } from './trim.js';
 
 const MAX_CANVAS_PX = 4_500_000; // per canvas; iOS Safari has a tight total canvas memory budget
@@ -270,6 +271,7 @@ export class Editor {
     if (this.recording) { stroke.rec = this.recording.id; stroke.at = Math.max(0, Math.round(this.recording.clock())); } // audio sync
     this.cur = { el, stroke, pointerId: e.pointerId, pointerType: e.pointerType, lastP: 0.5 };
     this.addPoints(e);
+    this.holdTrack(e);
     this.attachLive(el, tool === 'hl' ? 2 : 4);
     this.live.style.mixBlendMode = tool === 'hl' && hlBlend(el._page, this.doc.meta.paper) === 'multiply' ? 'multiply' : 'normal';
     this.drawLive();
@@ -286,6 +288,7 @@ export class Editor {
   }
   detachLive() {
     const c = this.live;
+    c.classList.remove('snap-cue');
     c.getContext('2d').clearRect(0, 0, c.width, c.height);
     c.remove();
   }
@@ -663,7 +666,9 @@ export class Editor {
     }
     if (this.cur && e.pointerId === this.cur.pointerId) {
       e.preventDefault();
+      if (this.cur.snap) { this.snapMove(e); return; }
       this.addPoints(e);
+      this.holdTrack(e);
       this.drawLive();
     } else if (this.erasing && e.pointerId === this.erasing.pointerId) {
       e.preventDefault();
@@ -685,13 +690,22 @@ export class Editor {
     if (this.lasso && e.pointerId === this.lasso.pointerId) { this.finishLasso(cancelled); return; }
     if (this.moving && e.pointerId === this.moving.pointerId) { this.endMove(); return; }
     if (this.cur && e.pointerId === this.cur.pointerId) {
-      const { el, stroke } = this.cur;
+      const { el, stroke, snap } = this.cur;
+      this.holdStop();
       this.cur = null;
       if (this._lraf) { cancelAnimationFrame(this._lraf); this._lraf = 0; }
+      if (snap && cancelled) stroke.pts = snap.orig;
       if (stroke.pts.length && !(cancelled && stroke.pts.length < 3)) {
         el._page.strokes.push(stroke);
         this.paintStroke(el, stroke);
-        this.push({ t: 'add', pageId: el._page.id, stroke });
+        if (snap && !cancelled) {
+          // two history steps: one undo brings back the hand-drawn stroke, a second removes it
+          const to = stroke.pts; stroke.pts = snap.orig;
+          this.push({ t: 'add', pageId: el._page.id, stroke });
+          stroke.pts = to;
+          this.push({ t: 'snap', pageId: el._page.id, stroke, from: snap.orig, to, shape: snap.shape.type });
+          this.onSnap?.(snap.shape.type);
+        } else this.push({ t: 'add', pageId: el._page.id, stroke });
       }
       this.detachLive();
     } else if (this.erasing && e.pointerId === this.erasing.pointerId) {
@@ -702,7 +716,45 @@ export class Editor {
     }
   }
 
+  /* ---------------- shape snapping ----------------
+     Pencil held still (< 3px) for 500 ms at the end of a pen stroke -> replace it live with a clean shape.
+     While still held, moving the pencil resizes / rotates it; lifting commits. Stored as a normal point list. */
+  holdTrack(e) {
+    const c = this.cur;
+    if (!c || c.snap || c.pointerType !== 'pen' || c.stroke.tool !== 'pen' || this.settings.shapeSnap === false) return;
+    if (c.hold && Math.hypot(e.clientX - c.hold.x, e.clientY - c.hold.y) < 3) return;
+    clearTimeout(this._holdT);
+    c.hold = { x: e.clientX, y: e.clientY };
+    this._holdT = setTimeout(() => this.trySnap(c), this.snapDelay ?? 500);
+  }
+  holdStop() { clearTimeout(this._holdT); this._holdT = 0; }
+  trySnap(c) {
+    if (this.cur !== c || c.snap) return;
+    const shape = Shapes.recognize(c.stroke.pts);
+    if (!shape) return;
+    const ps = c.stroke.pts.map((p) => p[2]).sort((a, b) => a - b), pr = ps[Math.floor(ps.length / 2)] ?? 0.5;
+    const r = c.el.getBoundingClientRect();
+    const anchor = [(c.hold.x - r.left) / this.scale, (c.hold.y - r.top) / this.scale];
+    c.snap = { orig: c.stroke.pts, shape, base: shape, pr, anchor, pivot: Shapes.center(shape), moved: false };
+    c.stroke.pts = Shapes.toPoints(shape, pr);
+    const lv = this.live; lv.classList.remove('snap-cue'); void lv.offsetWidth; lv.classList.add('snap-cue');
+    this.drawLive();
+  }
+  snapMove(e) {
+    const c = this.cur, S = c.snap;
+    if (!S.moved && Math.hypot(e.clientX - c.hold.x, e.clientY - c.hold.y) < 3) return;
+    S.moved = true;
+    const r = c.el.getBoundingClientRect(), p = [(e.clientX - r.left) / this.scale, (e.clientY - r.top) / this.scale];
+    const v0 = [S.anchor[0] - S.pivot[0], S.anchor[1] - S.pivot[1]], v1 = [p[0] - S.pivot[0], p[1] - S.pivot[1]];
+    const d0 = Math.hypot(...v0); if (d0 < 2) return;
+    const k = Math.max(0.1, Math.hypot(...v1) / d0), rot = Math.atan2(v1[1], v1[0]) - Math.atan2(v0[1], v0[0]);
+    S.shape = Shapes.transform(S.base, S.pivot, k, rot);
+    c.stroke.pts = Shapes.toPoints(S.shape, S.pr);
+    this.drawLive();
+  }
+
   cancelActive() {
+    this.holdStop();
     if (this.cur) { this.cur = null; this.detachLive(); }
     if (this.erasing) {
       const { el, removed } = this.erasing;
@@ -991,6 +1043,9 @@ export class Editor {
       case 'add':
         if (undo) { const i = strokes.indexOf(a.stroke); if (i >= 0) strokes.splice(i, 1); }
         else strokes.push(a.stroke);
+        this.redrawInk(el); break;
+      case 'snap':
+        a.stroke.pts = undo ? a.from : a.to;
         this.redrawInk(el); break;
       case 'erase':
         if (undo) [...a.items].sort((x, y) => x.index - y.index).forEach(({ stroke, index }) => strokes.splice(Math.min(index, strokes.length), 0, stroke));

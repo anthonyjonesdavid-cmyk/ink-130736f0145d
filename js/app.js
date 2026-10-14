@@ -18,7 +18,7 @@ import {
 
 /* ---------------- settings ---------------- */
 const DEFAULTS = {
-  fingerDraw: false, pinchZoom: false, tool: 'pen',
+  fingerDraw: false, pinchZoom: false, shapeSnap: true, tool: 'pen',
   pen: { color: '#1c1c1e', size: 2.6 }, hl: { color: '#ffe24a', size: 16 }, eraser: { size: 24 },
   paper: { style: 'ruled', color: '#ffffff' },
   penTheme: { light: '#1c1c1e', dark: '#ffffff' },
@@ -1126,7 +1126,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.10j';
+const CSS_BUILD = '2026.10.10k';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1712,8 +1712,13 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10j';
+const APP_VERSION = '2026.10.10k';
 const CHANGES = [
+  ['2026.10.10k', [
+    'Shape snapping: draw a line, circle, ellipse, rectangle/square, triangle or arrow with the Pencil and hold still for a moment at the end — it turns into a clean shape in the same colour and thickness.',
+    'Keep holding and move to resize or rotate the shape; lift to finish. One undo brings back your hand-drawn version.',
+    'Only the pen tool with Apple Pencil snaps (not highlighter, eraser or finger). Turn it off in Settings → Shape snapping.',
+  ]],
   ['2026.10.10j', [
     'No more automatic Google Drive activity: no backup on open/close, no “Back up” bar, no inbox check or inbox bar when Inkwell opens.',
     'Settings → Back up now (keeps the newest 7, shows last backup time and status) and Restore from Drive.',
@@ -1775,6 +1780,7 @@ async function openSettings() {
   const body = h(`<div class="settings">
     <label class="switch-row"><span>${icon('hand')} Draw with finger<small>Off: only Apple Pencil draws; fingers scroll.</small></span><input type="checkbox" id="sFinger" ${settings.fingerDraw ? 'checked' : ''}><span class="switch"></span></label>
     <label class="switch-row"><span>${icon('zoom')} Pinch to zoom<small>Off by default so a resting hand doesn’t zoom the page. Use the zoom button to change size.</small></span><input type="checkbox" id="sPinch" ${settings.pinchZoom ? 'checked' : ''}><span class="switch"></span></label>
+    <label class="switch-row"><span>${icon('pen')} Shape snapping<small>Hold the Pencil still for a moment at the end of a line, circle, rectangle, triangle or arrow to make it neat. Keep holding and move to resize or rotate. Undo brings back your drawing.</small></span><input type="checkbox" id="sShape" ${settings.shapeSnap !== false ? 'checked' : ''}><span class="switch"></span></label>
     <div class="set-group">
       <div class="set-title">Storage</div>
       <p>Notes are stored only on this device (IndexedDB). <b>${s.persisted ? 'Persistent storage is granted.' : 'Persistent storage not granted yet.'}</b> ${mb(s.usage)} used.</p>
@@ -1803,6 +1809,7 @@ async function openSettings() {
     </details>
     <p class="fine">Inkwell works offline. Nothing is uploaded anywhere.</p>
   </div>`);
+  $('#sShape', body).addEventListener('change', (e) => { settings.shapeSnap = e.target.checked; saveSettings(); });
   $('#sFinger', body).addEventListener('change', (e) => { settings.fingerDraw = e.target.checked; saveSettings(); updateToolbar(); });
   $('#sPinch', body).addEventListener('change', (e) => { settings.pinchZoom = e.target.checked; saveSettings(); toast(settings.pinchZoom ? 'Pinch zoom on' : 'Pinch zoom off'); });
   $('#sPersist', body).addEventListener('click', async () => {
