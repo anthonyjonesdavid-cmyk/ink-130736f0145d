@@ -37,7 +37,8 @@ function bbox(pts) {
   return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0, d: Math.hypot(x1 - x0, y1 - y0) };
 }
 const AX = 8 * Math.PI / 180; // snap to the axes within 8°
-function snapAngle(a) { const q = Math.PI / 2, r = Math.round(a / q) * q; return Math.abs(a - r) < AX ? r : a; }
+function snapAngle(a, tol = AX) { const q = Math.PI / 2, r = Math.round(a / q) * q; return Math.abs(a - r) < tol ? r : a; }
+const LINE_AX = 3 * Math.PI / 180; // lines only straighten to level/vertical within 3°, otherwise they go exactly start -> end
 function polyErr(pts, verts, closed) {
   let m = 0; const n = verts.length;
   for (const p of pts) {
@@ -57,11 +58,12 @@ export function recognize(raw) {
   const B = bbox(raw); if (B.d < 14) return null;
   const L = pathLen(raw), R = resample(raw, 96), s = R[0], e = R[R.length - 1], gap = dist(s, e);
 
-  // straight line
+  // straight line: open and fairly straight -> exact line from the start point to the end point
+  // (judged by the largest sideways wobble relative to the length, so a shaky real-Pencil line still counts)
   const lineErr = Math.max(...R.map((p) => segDist(p, s, e)));
-  if (gap > 0.92 * L && lineErr < Math.max(2.5, 0.045 * gap)) {
-    let ang = snapAngle(Math.atan2(e[1] - s[1], e[0] - s[0])), len = gap;
-    return { type: 'line', verts: [[s[0], s[1]], [s[0] + Math.cos(ang) * len, s[1] + Math.sin(ang) * len]], closed: false };
+  if (gap > 0.8 * L && lineErr < Math.max(4, 0.09 * gap)) {
+    const ang = snapAngle(Math.atan2(e[1] - s[1], e[0] - s[0]), LINE_AX), len = gap;
+    return { type: 'line', verts: [[raw[0][0], raw[0][1]], [raw[0][0] + Math.cos(ang) * len, raw[0][1] + Math.sin(ang) * len]], closed: false };
   }
 
   // arrow: shaft, then both barbs from the tip (S,T,A,T,B) — or S,T,A then a separate jump isn't possible in one stroke
@@ -150,6 +152,7 @@ export function transform(shape, pivot, k, rot) {
 }
 
 export function toPoints(shape, p = 0.5) {
+  if (shape.type === 'line') { const r = (n) => Math.round(n * 100) / 100; return shape.verts.map(([x, y]) => [r(x), r(y), p]); } // exactly 2 points
   const V = shape.closed ? shape.verts.concat([shape.verts[0]]) : shape.verts, out = [];
   const r = (n) => Math.round(n * 100) / 100;
   for (let i = 0; i < V.length - 1; i++) {

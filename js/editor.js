@@ -4,6 +4,7 @@ import {
 } from './render.js';
 import { uid } from './store.js';
 import * as Shapes from './shapes.js';
+const HOLD_TOL = 8, HOLD_MS = 450; // px of jitter allowed while holding; how long to hold before a shape snaps
 import { pageViewport } from './trim.js';
 
 const MAX_CANVAS_PX = 4_500_000; // per canvas; iOS Safari has a tight total canvas memory budget
@@ -719,22 +720,32 @@ export class Editor {
   /* ---------------- shape snapping ----------------
      Pencil held still (< 3px) for 500 ms at the end of a pen stroke -> replace it live with a clean shape.
      While still held, moving the pencil resizes / rotates it; lifting commits. Stored as a normal point list. */
+  // Hold detection is timer-driven: a held Apple Pencil keeps sending tiny moves, so we only track where the
+  // "still" period began (reset when the pencil drifts > HOLD_TOL px from it) and poll whether it has lasted HOLD_MS.
   holdTrack(e) {
     const c = this.cur;
     if (!c || c.snap || c.pointerType !== 'pen' || c.stroke.tool !== 'pen' || this.settings.shapeSnap === false) return;
-    if (c.hold && Math.hypot(e.clientX - c.hold.x, e.clientY - c.hold.y) < 3) return;
-    clearTimeout(this._holdT);
-    c.hold = { x: e.clientX, y: e.clientY };
-    this._holdT = setTimeout(() => this.trySnap(c), this.snapDelay ?? 500);
+    const now = performance.now();
+    // compare with the centre of the samples since the hold began, so random jitter around one spot never resets it
+    const H = c.hold;
+    if (!H || Math.hypot(e.clientX - H.x, e.clientY - H.y) > HOLD_TOL) c.hold = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, n: 1, t: now, idx: c.stroke.pts.length - 1 };
+    else { H.sx += e.clientX; H.sy += e.clientY; H.n++; H.x = H.sx / H.n; H.y = H.sy / H.n; }
+    if (!this._holdT) this._holdT = setInterval(() => {
+      const k = this.cur;
+      if (!k || k.snap || !k.hold) { this.holdStop(); return; }
+      if (performance.now() - k.hold.t >= (this.snapDelay ?? HOLD_MS)) { this.holdStop(); this.trySnap(k); }
+    }, 50);
   }
-  holdStop() { clearTimeout(this._holdT); this._holdT = 0; }
+  holdStop() { clearInterval(this._holdT); this._holdT = 0; }
   trySnap(c) {
     if (this.cur !== c || c.snap) return;
-    const shape = Shapes.recognize(c.stroke.pts);
+    // recognise only the drawn part: the jitter while holding is dropped, the stroke ends where the hold began
+    const drawn = c.stroke.pts.slice(0, Math.max(2, c.hold.idx + 1));
+    const shape = Shapes.recognize(drawn);
     if (!shape) return;
-    const ps = c.stroke.pts.map((p) => p[2]).sort((a, b) => a - b), pr = ps[Math.floor(ps.length / 2)] ?? 0.5;
+    const ps = drawn.map((p) => p[2]).sort((a, b) => a - b), pr = ps[Math.floor(ps.length / 2)] ?? 0.5;
     const r = c.el.getBoundingClientRect();
-    const anchor = [(c.hold.x - r.left) / this.scale, (c.hold.y - r.top) / this.scale];
+    const anchor = shape.type === 'line' ? shape.verts[1].slice() : [(c.hold.x - r.left) / this.scale, (c.hold.y - r.top) / this.scale];
     c.snap = { orig: c.stroke.pts, shape, base: shape, pr, anchor, pivot: Shapes.center(shape), moved: false };
     c.stroke.pts = Shapes.toPoints(shape, pr);
     const lv = this.live; lv.classList.remove('snap-cue'); void lv.offsetWidth; lv.classList.add('snap-cue');
@@ -742,7 +753,7 @@ export class Editor {
   }
   snapMove(e) {
     const c = this.cur, S = c.snap;
-    if (!S.moved && Math.hypot(e.clientX - c.hold.x, e.clientY - c.hold.y) < 3) return;
+    if (!S.moved && Math.hypot(e.clientX - c.hold.x, e.clientY - c.hold.y) <= HOLD_TOL + 4) return; // holding jitter doesn't move it
     S.moved = true;
     const r = c.el.getBoundingClientRect(), p = [(e.clientX - r.left) / this.scale, (e.clientY - r.top) / this.scale];
     const v0 = [S.anchor[0] - S.pivot[0], S.anchor[1] - S.pivot[1]], v1 = [p[0] - S.pivot[0], p[1] - S.pivot[1]];

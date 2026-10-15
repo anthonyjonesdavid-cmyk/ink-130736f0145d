@@ -1,6 +1,6 @@
 // Offline support with a network-first app shell so a reload picks up UI updates.
 // Static vendor files stay cache-first.
-const VERSION = 'inkwell-e1c37e014cb3';
+const VERSION = 'inkwell-34eab8c92e73';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest', 'sw.js',
   'js/app.js', 'js/editor.js', 'js/shapes.js', 'js/store.js', 'js/db.js', 'js/crypto.js', 'js/render.js', 'js/pdf.js',

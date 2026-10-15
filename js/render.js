@@ -161,7 +161,17 @@ export function strokeOptions(st, last = true) {
 }
 
 export function strokeOutline(st, last = true) {
+  if (st.pts.length === 2 && st.tool !== 'hl') return lineOutline(st);
   return getStroke(st.pts, strokeOptions(st, last));
+}
+// A two-point pen stroke (a snapped straight line) is drawn as an exact capsule: no smoothing or pressure wobble.
+function lineOutline(st) {
+  const [a, b] = st.pts, p = st.pr ? (a[2] + b[2]) / 2 || 0.5 : 0.5;
+  const r = Math.max(0.3, st.size * (0.5 - 0.55 * (0.5 - p)));
+  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), out = [];
+  for (let i = 0; i <= 12; i++) { const t = ang + Math.PI / 2 - Math.PI * i / 12; out.push([b[0] + Math.cos(t) * r, b[1] + Math.sin(t) * r]); }
+  for (let i = 0; i <= 12; i++) { const t = ang - Math.PI / 2 - Math.PI * i / 12; out.push([a[0] + Math.cos(t) * r, a[1] + Math.sin(t) * r]); }
+  return out;
 }
 
 // Smooth closed path through outline points (quadratic curves through midpoints).

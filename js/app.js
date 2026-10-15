@@ -1126,7 +1126,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.10k';
+const CSS_BUILD = '2026.10.10l';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1712,8 +1712,13 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10k';
+const APP_VERSION = '2026.10.10l';
 const CHANGES = [
+  ['2026.10.10l', [
+    'Straight lines snap reliably on iPad: draw a line, keep the Pencil down for about half a second, and it becomes a perfectly straight line from where you started to where you stopped.',
+    'Small hand tremor while holding no longer stops the snap or wiggles the line; keep holding and move to drag the end point.',
+    'Lines only straighten to level/vertical when within 3°, so slanted lines stay slanted.',
+  ]],
   ['2026.10.10k', [
     'Shape snapping: draw a line, circle, ellipse, rectangle/square, triangle or arrow with the Pencil and hold still for a moment at the end — it turns into a clean shape in the same colour and thickness.',
     'Keep holding and move to resize or rotate the shape; lift to finish. One undo brings back your hand-drawn version.',
