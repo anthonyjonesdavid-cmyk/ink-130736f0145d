@@ -61,10 +61,22 @@ function signIn() {
   });
 }
 
-async function api(path, opts = {}) {
-  const r = await fetch(path.startsWith('http') ? path : API + path, { ...opts, headers: { Authorization: 'Bearer ' + tok.t, ...(opts.headers || {}) } });
+// Drive errors with the reason Google gives (quota full, rate limit, …) so the status line says what went wrong.
+async function driveError(r) {
+  let reason = '', msg = '';
+  try { const j = await r.json(); reason = j?.error?.errors?.[0]?.reason || j?.error?.status || ''; msg = j?.error?.message || ''; } catch {}
+  if (r.status === 403 && /storageQuota|quotaExceeded/i.test(reason + msg)) return new Error('Your Google Drive is full');
+  if (r.status === 403 && /rateLimit|userRateLimit/i.test(reason)) return Object.assign(new Error('Google Drive is busy (rate limit)'), { retry: true });
+  if (r.status === 403) return new Error('Google Drive refused access' + (msg ? ` (${msg})` : ''));
+  if (r.status >= 500 || r.status === 429 || r.status === 408) return Object.assign(new Error(`Google Drive error ${r.status}`), { retry: true });
+  return new Error(`Google Drive error ${r.status}${msg ? `: ${msg}` : ''}`);
+}
+async function api(path, opts = {}, ok = []) {
+  let r;
+  try { r = await fetch(path.startsWith('http') ? path : API + path, { ...opts, headers: { Authorization: 'Bearer ' + tok.t, ...(opts.headers || {}) } }); }
+  catch (e) { throw Object.assign(new Error('Connection to Google Drive dropped'), { retry: true, net: true }); }
   if (r.status === 401) { tok = null; const e = new Error('Google sign-in expired'); e.auth = true; throw e; }
-  if (!r.ok) throw new Error(`Google Drive error ${r.status}`);
+  if (!r.ok && !ok.includes(r.status)) throw await driveError(r);
   return r;
 }
 const q = (s) => encodeURIComponent(s);
@@ -97,10 +109,15 @@ function stamp(d = new Date()) {
 }
 
 // the actual upload (needs a token already)
+const chunkSize = () => window.__inkwellBackupChunk || 8 * 1024 * 1024; // multiple of 256 KB, as Drive requires
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+let progress = null; // {phase, pct}
+export const getProgress = () => progress;
+const setProg = (phase, pct) => { progress = { phase, pct }; listeners.forEach((f) => f(state())); };
 async function upload() {
   const fid = await folderId();
-  const text = await store.exportBackup();
-  const blob = new Blob([text], { type: 'application/json' });
+  setProg('Preparing', 0);
+  const blob = await store.exportBackupBlob((f) => { if (Math.random() < 0.05 || f === 1) setProg('Preparing', f); });
   const meta = { name: `Inkwell backup ${stamp()}.json`, parents: [fid], mimeType: 'application/json', description: 'Inkwell backup (inkwell-backup v1). Locked folders stay encrypted.' };
   // resumable upload: works for backups of any size
   const start = await api('/upload/drive/v3/files?uploadType=resumable&fields=id', {
@@ -108,7 +125,26 @@ async function upload() {
   });
   const loc = start.headers.get('Location');
   if (!loc) throw new Error('Google Drive didn’t accept the upload');
-  await api(loc, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: blob });
+  // send in 8 MB pieces; a dropped piece is retried and the upload resumes where Drive says it stopped
+  const total = blob.size;
+  let off = 0, fails = 0;
+  setProg('Uploading', 0);
+  while (off < total) {
+    const end = Math.min(off + chunkSize(), total);
+    try {
+      const r = await api(loc, { method: 'PUT', headers: { 'Content-Range': `bytes ${off}-${end - 1}/${total}` }, body: blob.slice(off, end) }, [308]);
+      if (r.status === 308) { const rg = r.headers.get('Range'); off = rg ? +rg.split('-')[1] + 1 : end; } else off = total;
+      fails = 0;
+    } catch (e) {
+      if (!e.retry || ++fails > 6) throw e;
+      await wait(Math.min(30000, 1000 * 2 ** fails));
+      try { // ask Drive how much it has
+        const st = await api(loc, { method: 'PUT', headers: { 'Content-Range': `bytes */${total}` } }, [308]);
+        if (st.status === 308) { const rg = st.headers.get('Range'); off = rg ? +rg.split('-')[1] + 1 : 0; } else off = total;
+      } catch (e2) { if (!e2.retry) throw e2; }
+    }
+    setProg('Uploading', off / total);
+  }
   // keep the newest KEEP
   const all = await listBackups();
   for (const f of all.slice(KEEP)) { try { await api(`/drive/v3/files/${f.id}`, { method: 'DELETE' }); } catch (e) { if (e.auth) throw e; } }
@@ -125,14 +161,14 @@ export function backupNow({ interactive = true } = {}) {
     const size = await upload();
     save({ lastAt: Date.now(), lastStatus: 'ok', lastSize: size, lastError: null });
     hideNag();
-    if (interactive) toast('Backed up to Google Drive');
+    if (interactive) toast(`Backed up to Google Drive (${fmtBytes(size)})`, 4000);
     return true;
   }).catch((e) => {
     const needTap = !!e.auth;
     save({ lastStatus: needTap ? 'signin' : 'error', lastError: needTap ? null : e.message, lastTry: Date.now() });
     if (interactive) toast(needTap ? 'Google sign-in needed — tap Back up now again' : 'Backup failed: ' + e.message, 4000);
     return false;
-  }).finally(() => { running = null; });
+  }).finally(() => { running = null; progress = null; listeners.forEach((f) => f(state())); });
   return running;
 }
 
@@ -166,13 +202,18 @@ function hideNag() { const n = $('#backupNag'); if (n) n.hidden = true; }
 export function cleanupAuto() {
   hideNag();
   const s = state();
+  if (s.lastStatus === 'running') { // the app was closed (or iPadOS killed it) mid-backup
+    s.lastStatus = 'error'; s.lastError = 'Interrupted — Inkwell was closed or ran out of memory before the upload finished';
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {}
+  }
   if ('on' in s) { delete s.on; try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {} }
 }
 export function statusText(s = state()) {
   if (!s.lastAt && !s.lastStatus) return 'No backup yet';
   const when = s.lastAt ? new Date(s.lastAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
-  const st = s.lastStatus === 'running' ? 'Backing up…'
-    : s.lastStatus === 'error' ? `<span class="err">Last try failed: ${esc(s.lastError || 'error')}</span>`
+  const pr = progress;
+  const st = s.lastStatus === 'running' ? (pr ? `${pr.phase}… ${Math.round(pr.pct * 100)}% (keep Inkwell open)` : 'Backing up…')
+    : s.lastStatus === 'error' ? `<span class="err">Last try failed${s.lastTry ? ` (${esc(new Date(s.lastTry).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))})` : ''}: ${esc(s.lastError || 'error')}</span>`
     : s.lastStatus === 'signin' ? '<span class="err">Needs a tap to sign in to Google again</span>'
     : s.lastStatus === 'offline' ? '<span class="err">Was offline</span>'
     : s.lastAt ? 'OK' : '';

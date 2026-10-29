@@ -383,6 +383,30 @@ export async function exportBackup() {
   return JSON.stringify(data, (k, v) => (v instanceof Uint8Array ? { $b64: b64(v) } : v instanceof ArrayBuffer ? { $b64: b64(new Uint8Array(v)) } : v));
 }
 
+// Same file format as exportBackup, but built record by record into a Blob, so a large library (hundreds of MB of PDFs
+// and audio) never has to exist as one giant string in memory (iPad Safari ran out of memory / hit the string limit).
+const bkReplacer = (k, v) => (v instanceof Uint8Array ? { $b64: b64(v) } : v instanceof ArrayBuffer ? { $b64: b64(new Uint8Array(v)) } : v);
+export async function exportBackupBlob(onProgress) {
+  const head = { format: 'inkwell-backup', version: 1, exportedAt: new Date().toISOString() };
+  const parts = [JSON.stringify(head).slice(0, -1)];
+  const all = [];
+  for (const st of db.STORES) all.push([st, await db.keys(st)]);
+  const total = all.reduce((n, [, k]) => n + k.length, 0) || 1;
+  let done = 0;
+  for (const [st, ks] of all) {
+    parts.push(`,${JSON.stringify(st)}:[`);
+    let first = true;
+    for (const k of ks) {
+      const rec = await db.get(st, k);
+      if (rec !== undefined) { parts.push(new Blob([(first ? '' : ',') + JSON.stringify(rec, bkReplacer)])); first = false; }
+      onProgress?.(++done / total);
+    }
+    parts.push(']');
+  }
+  parts.push('}');
+  return new Blob(parts, { type: 'application/json' });
+}
+
 export async function importBackup(text) {
   let data;
   try {

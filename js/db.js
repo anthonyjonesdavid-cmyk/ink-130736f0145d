@@ -48,6 +48,7 @@ export const get = (store, id) => run([store], 'readonly', (t) => reqP(t.objectS
 export const getAll = (store) => run([store], 'readonly', (t) => reqP(t.objectStore(store).getAll()));
 export const getAllBy = (store, index, key) => run([store], 'readonly', (t) => reqP(t.objectStore(store).index(index).getAll(key)));
 export const keysBy = (store, index, key) => run([store], 'readonly', (t) => reqP(t.objectStore(store).index(index).getAllKeys(key)));
+export const keys = (store) => run([store], 'readonly', (t) => reqP(t.objectStore(store).getAllKeys()));
 export const put = (store, val) => run([store], 'readwrite', (t) => { t.objectStore(store).put(val); });
 export const del = (store, id) => run([store], 'readwrite', (t) => { t.objectStore(store).delete(id); });
 

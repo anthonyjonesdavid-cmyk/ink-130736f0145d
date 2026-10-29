@@ -1173,7 +1173,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.29a';
+const CSS_BUILD = '2026.10.29b';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1770,8 +1770,12 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.29a';
+const APP_VERSION = '2026.10.29b';
 const CHANGES = [
+  ['2026.10.29b', [
+    'Google Drive backup works again with a big library: the backup is built note by note instead of all at once (it used to run out of memory on the iPad), and uploads in 8 MB pieces that retry and resume if the connection drops.',
+    'Settings shows progress while backing up (keep Inkwell open) and, if it fails, the reason (Drive full, connection dropped, sign-in expired, interrupted…).',
+  ]],
   ['2026.10.29a', [
     'Page templates: New Note asks for Blank, Lined, Grid, Dot grid or Planner (a simple daily planner) and remembers your last choice.',
     'Add page lets you pick the template for the new page. In the paper menu, choose This page or All pages to change a template later.',
