@@ -14,7 +14,8 @@ export const pageStyle = (paper, page) => (page && page.tpl) || (paper && paper.
 export const pagePaper = (paper, page) => ({ ...(paper || { color: '#ffffff' }), style: pageStyle(paper, page) });
 export const PAPER_COLORS = [
   { name: 'White', c: '#ffffff' },
-  { name: 'Ivory', c: '#fbf7ec' },
+  { name: 'Cream', c: '#fbf7ec' },
+  { name: 'Soft gray', c: '#eeeff1' },
   { name: 'Butter', c: '#fff5cf' },
   { name: 'Mint', c: '#e6f5ec' },
   { name: 'Sky', c: '#e6f0fb' },
@@ -108,20 +109,24 @@ const css = (o) => `rgba(${o.rgb.join(',')},${o.a})`;
 
 // Pattern geometry in page units (PDF points).
 // A preset can bring its own ruling (Sage: wider rule with side margins, measured from the reference sheet).
-export function paperGeometry(style, w, h, color) {
+export const PAPER_SPACING = [{ id: 'narrow', name: 'Narrow', k: 0.75 }, { id: 'regular', name: 'Regular', k: 1 }, { id: 'wide', name: 'Wide', k: 1.35 }];
+export const PAPER_WEIGHT = [{ id: 'light', name: 'Light', k: 0.6 }, { id: 'regular', name: 'Regular', k: 1 }, { id: 'heavy', name: 'Heavy', k: 1.9 }];
+export const spacingK = (p) => (PAPER_SPACING.find((x) => x.id === (p && p.spacing)) || PAPER_SPACING[1]).k;
+export const weightK = (p) => (PAPER_WEIGHT.find((x) => x.id === (p && p.weight)) || PAPER_WEIGHT[1]).k;
+export function paperGeometry(style, w, h, color, sk = 1) {
   const g = { lines: [], dots: [], margin: null };
   const rule = presetFor(color)?.rule;
   if (style === 'ruled' && rule) {
-    for (let y = rule.top; y < h - 8; y += rule.gap) g.lines.push([rule.inset, y, w - rule.inset, y]);
+    for (let y = rule.top; y < h - 8; y += rule.gap * sk) g.lines.push([rule.inset, y, w - rule.inset, y]);
   } else if (style === 'ruled') {
-    const s = 26;
+    const s = 26 * sk;
     for (let y = 78; y < h - 8; y += s) g.lines.push([0, y, w, y]);
   } else if (style === 'grid') {
-    const s = 18, ox = (w % s) / 2, oy = (h % s) / 2;
+    const s = 18 * sk, ox = (w % s) / 2, oy = (h % s) / 2;
     for (let x = ox; x <= w; x += s) g.lines.push([x, 0, x, h]);
     for (let y = oy; y <= h; y += s) g.lines.push([0, y, w, y]);
   } else if (style === 'dotted') {
-    const s = 18, ox = (w % s) / 2 + s / 2, oy = (h % s) / 2 + s / 2;
+    const s = 18 * sk, ox = (w % s) / 2 + s / 2, oy = (h % s) / 2 + s / 2;
     for (let y = oy; y < h; y += s) for (let x = ox; x < w; x += s) g.dots.push([x, y]);
   } else if (style === 'planner') {
     // simple daily planner: date line at the top, hours on the left (time gutter), to-do boxes + notes on the right
@@ -149,10 +154,11 @@ export function drawPaper(ctx, w, h, paper, devPerUnit) {
   ctx.fillStyle = paper.color || '#ffffff';
   ctx.fillRect(0, 0, w, h);
   if (paper.grain) drawGrain(ctx, w, h, isDark(paper.color || '#fff'));
-  const g = paperGeometry(paper.style, w, h, paper.color);
+  const g = paperGeometry(paper.style, w, h, paper.color, spacingK(paper));
+  const wk = weightK(paper);
   const ink = paperInk(paper.color || '#fff');
   ctx.strokeStyle = css(ink);
-  ctx.lineWidth = Math.max(0.6, 1 / devPerUnit);
+  ctx.lineWidth = Math.max(0.6, 1 / devPerUnit) * wk;
   ctx.beginPath();
   for (const [x1, y1, x2, y2] of g.lines) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
   ctx.stroke();
@@ -162,7 +168,7 @@ export function drawPaper(ctx, w, h, paper, devPerUnit) {
   }
   if (g.dots.length) {
     ctx.fillStyle = css(paperDot(paper.color || '#fff'));
-    const r = Math.max(0.9, 1.2 / devPerUnit);
+    const r = Math.max(0.9, 1.2 / devPerUnit) * Math.sqrt(wk);
     ctx.beginPath();
     for (const [x, y] of g.dots) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, Math.PI * 2); }
     ctx.fill();

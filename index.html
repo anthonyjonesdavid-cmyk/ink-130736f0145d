@@ -15,7 +15,7 @@
 <link rel="icon" type="image/png" href="icon-192.png">
 <script>/* home-screen app? reserve room for the status bar (see --top in styles.css) */
 if (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches) document.documentElement.classList.add('standalone');</script>
-<link rel="stylesheet" href="styles.css?v=95bd706ab00f" id="mainCss">
+<link rel="stylesheet" href="styles.css?v=a86bb9cffdad" id="mainCss">
 <!-- critical editor layout travels with the HTML, so a stale cached styles.css can never put the page on top of the toolbar -->
 <style>
 #editor:not(.hidden) { display: flex; flex-direction: column; }
@@ -41,6 +41,7 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
     <main id="libMain">
       <header class="lib-head">
         <div class="lib-title">
+          <button id="gearBtn" class="icon-btn" data-icon="gear" aria-label="Settings"></button>
           <button id="navBtn" class="icon-btn" data-icon="folder" aria-label="Folders"></button>
           <span id="sectionIcon" class="sec-ic"></span>
           <div><h1 id="sectionTitle">Notes</h1><div id="sectionSub" class="sub"></div></div>
@@ -50,7 +51,7 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
           <button id="selectBtn" class="btn secondary" data-icon="select"><span>Select</span></button>
           <button id="importPdfBtn" class="btn secondary" data-icon="fileUp"><span>Import PDF</span></button>
           <button id="newNoteBtn" class="btn primary" data-icon="plus"><span>New Note</span></button>
-          <button id="settingsBtn" class="icon-btn" data-icon="settings" aria-label="Sort, filter and settings"></button>
+          <button id="settingsBtn" class="icon-btn" data-icon="settings" aria-label="Sort and filter"></button>
         </div>
         <div class="lib-actions sel-actions" id="selActions" hidden>
           <button id="selAllBtn" class="btn secondary">Select All</button>
@@ -122,6 +123,6 @@ if (navigator.standalone === true || matchMedia('(display-mode: standalone)').ma
 <input type="file" id="pdfInput" class="file-input" accept="application/pdf,.pdf,application/zip,.zip,.note" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="photoInput" class="file-input" accept="image/*" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="backupInput" class="file-input" tabindex="-1" aria-hidden="true">
-<script type="module" src="js/app.js?v=95bd706ab00f"></script>
+<script type="module" src="js/app.js?v=a86bb9cffdad"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@ import { pickCreated, parsePdfDate, m4aCreated, dateFromName } from './dates.js'
 import * as backup from './backup.js';
 import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest, checkInbox, importInbox, markInboxImported, inboxState, inboxUrl, inboxHasToken } from './drive.js';
 import {
-  renderPageInto, pageStyle, PAPER_STYLES, PAPER_COLORS, PEN_COLORS, PEN_SIZES, HL_COLORS, HL_SIZES, ERASER_SIZES, drawPaper, isDark, hexToRgb, loadGrain, presetFor,
+  renderPageInto, pageStyle, PAPER_SPACING, PAPER_WEIGHT, PAPER_STYLES, PAPER_COLORS, PEN_COLORS, PEN_SIZES, HL_COLORS, HL_SIZES, ERASER_SIZES, drawPaper, isDark, hexToRgb, loadGrain, presetFor,
 } from './render.js';
 
 /* ---------------- settings ---------------- */
@@ -147,7 +147,6 @@ function libMenu(anchor) {
     '-',
     ...(pdfs.length ? [{ label: 'Trim white borders on PDFs', icon: 'crop', id: 'trimAll', onClick: () => trimAll(pdfs.map((d) => d.id)) }] : []),
     { label: 'Import from Inkwell Inbox…', icon: 'inbox', id: 'checkInbox', onClick: () => openInboxImport() },
-    { label: 'Settings…', icon: 'settings', id: 'openSettings', onClick: openSettings },
   ], { width: 290 });
 }
 
@@ -1173,7 +1172,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.29b';
+const CSS_BUILD = '2026.10.29c';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1475,6 +1474,10 @@ $('#paperBtn').addEventListener('click', (e) => {
     <div class="pop-title">Page colour</div>
     <div class="paper-colors">${PAPER_COLORS.map((c) => `<button class="pcolor ${paper.color === c.c ? 'on' : ''}" data-color="${c.c}" style="--c:${c.c}" title="${c.name}" aria-label="${c.name}"></button>`).join('')}
       <label class="pcolor custom ${PAPER_COLORS.some((c) => c.c === paper.color) ? '' : 'on'}" title="Custom" style="--c:${paper.color}"><input type="color" value="${paper.color}"></label></div>
+    <div class="pop-title">Line spacing</div>
+    <div class="paper-seg" data-group="spacing">${PAPER_SPACING.map((x) => `<button type="button" data-spacing="${x.id}" class="${(paper.spacing || 'regular') === x.id ? 'on' : ''}">${x.name}</button>`).join('')}</div>
+    <div class="pop-title">Line weight</div>
+    <div class="paper-seg" data-group="weight">${PAPER_WEIGHT.map((x) => `<button type="button" data-weight="${x.id}" class="${(paper.weight || 'regular') === x.id ? 'on' : ''}">${x.name}</button>`).join('')}</div>
     <label class="switch-row grain-row"><span>Paper grain<small>Subtle real-paper texture under the lines and ink.</small></span><input type="checkbox" id="grainToggle" ${paper.grain ? 'checked' : ''}><span class="switch"></span></label>
     ${current.meta.kind === 'pdf' ? '<p class="pop-note">Applies to blank pages you add. PDF pages keep their own look.</p>' : ''}
   </div>`);
@@ -1482,7 +1485,7 @@ $('#paperBtn').addEventListener('click', (e) => {
     const ctx = c.getContext('2d'); const s = 96 / 612 * 2.2;
     ctx.setTransform(s, 0, 0, s, 0, 0);
     ctx.clearRect(0, 0, 612, 792);
-    drawPaper(ctx, 612 / 2.2, 792 / 2.2, { style: PAPER_STYLES[i].id, color: current.meta.paper.color, grain: !!current.meta.paper.grain }, s);
+    drawPaper(ctx, 612 / 2.2, 792 / 2.2, { ...current.meta.paper, style: PAPER_STYLES[i].id }, s);
   });
   const apply = (p) => {
     editor.setPaper(p, { clearTpl: p.style !== current.meta.paper.style }); settings.paper = { ...p }; saveSettings();
@@ -1500,6 +1503,13 @@ $('#paperBtn').addEventListener('click', (e) => {
       editor.setPageTpl(ci, v); settings.pageTpl = s.dataset.style; saveSettings(); markStyle(); return;
     }
     if (s) { apply({ ...current.meta.paper, style: s.dataset.style }); return; }
+    const sp = ev.target.closest('[data-spacing]'), wt = ev.target.closest('[data-weight]');
+    if (sp || wt) {
+      apply({ ...current.meta.paper, ...(sp ? { spacing: sp.dataset.spacing } : { weight: wt.dataset.weight }) });
+      $$('[data-spacing]', pop).forEach((b) => b.classList.toggle('on', b.dataset.spacing === (current.meta.paper.spacing || 'regular')));
+      $$('[data-weight]', pop).forEach((b) => b.classList.toggle('on', b.dataset.weight === (current.meta.paper.weight || 'regular')));
+      return;
+    }
     // presets that come with grain (Sage) switch it on; other colours keep the current grain setting
     if (c) apply({ ...current.meta.paper, color: c.dataset.color, ...(presetFor(c.dataset.color)?.grain ? { grain: true } : {}) });
   });
@@ -1528,7 +1538,7 @@ $('#pagesBtn').addEventListener('click', () => setPagesOpen(!pagesOpen()));
 let thumbTimer;
 function scheduleThumbRefresh() { clearTimeout(thumbTimer); thumbTimer = setTimeout(() => refreshThumbs(), 600); }
 function thumbVersion(p) {
-  return p.id + ':' + p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + pageStyle(current.meta.paper, p) + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + ':' + p.w + 'x' + p.h + ':' + JSON.stringify(p.trim || null);
+  return p.id + ':' + p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + pageStyle(current.meta.paper, p) + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + (current.meta.paper.spacing || '') + (current.meta.paper.weight || '') + ':' + p.w + 'x' + p.h + ':' + JSON.stringify(p.trim || null);
 }
 let thumbOrder = '';
 async function refreshThumbs(full = false) {
@@ -1770,8 +1780,9 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.29b';
+const APP_VERSION = '2026.10.29c';
 const CHANGES = [
+  ['2026.10.29c', ['Settings has its own gear button at the top left of the notes screen. The sliders button on the right is now just Sort and filter.', 'Paper menu: new Soft gray colour (Ivory is now called Cream), Line spacing (Narrow / Regular / Wide) and Line weight (Light / Regular / Heavy). Your last choice is used for new notes; PDF export matches.']],
   ['2026.10.29b', [
     'Google Drive backup works again with a big library: the backup is built note by note instead of all at once (it used to run out of memory on the iPad), and uploads in 8 MB pieces that retry and resume if the connection drops.',
     'Settings shows progress while backing up (keep Inkwell open) and, if it fails, the reason (Drive full, connection dropped, sign-in expired, interrupted…).',
@@ -1846,6 +1857,7 @@ const CHANGES = [
   ]],
 ];
 $('#settingsBtn').addEventListener('click', (e) => libMenu(e.currentTarget));
+$('#gearBtn').addEventListener('click', () => openSettings());
 async function openSettings() {
   const s = await storageStatus();
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
