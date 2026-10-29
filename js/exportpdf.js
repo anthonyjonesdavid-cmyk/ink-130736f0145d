@@ -1,7 +1,7 @@
 // Flatten a note (paper pages and/or original PDF pages + ink) into a new PDF using pdf-lib.
 // Ink is written as vector paths, so it stays crisp at any zoom.
 import { PDFDocument, rgb, BlendMode, degrees } from '../vendor/pdf-lib.esm.min.js';
-import { paperGeometry, paperInk, paperDot, isDark, hexToRgb, strokeOutline, outlineToPath, HL_ALPHA, loadGrain, drawGrain } from './render.js';
+import { pageStyle, paperGeometry, paperInk, paperDot, isDark, hexToRgb, strokeOutline, outlineToPath, HL_ALPHA, loadGrain, drawGrain } from './render.js';
 
 // Paper colour + grain as a raster (JPEG) page background, so exports match the screen. Ruling and ink stay vector on top.
 async function grainBackground(out, paper, w, h, cache) {
@@ -78,7 +78,7 @@ export async function exportNoteAsPdf({ meta, body, pdfBytes, pdfDoc }) {
         try { page.drawImage(await grainBackground(out, paper, pg.w, pg.h, bgCache), { x: 0, y: 0, width: pg.w, height: pg.h }); }
         catch (e) { console.warn('grain export', e); }
       }
-      const g = paperGeometry(paper.style, pg.w, pg.h, paper.color);
+      const g = paperGeometry(pageStyle(paper, pg), pg.w, pg.h, paper.color);
       const ink = paperInk(paper.color || '#fff');
       const ic = rgb(ink.rgb[0] / 255, ink.rgb[1] / 255, ink.rgb[2] / 255);
       for (const [x1, y1, x2, y2] of g.lines) page.drawLine({ start: { x: x1, y: pg.h - y1 }, end: { x: x2, y: pg.h - y2 }, thickness: 0.6, color: ic, opacity: ink.a });

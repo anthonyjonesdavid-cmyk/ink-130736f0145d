@@ -3,11 +3,15 @@ import { getStroke } from '../vendor/perfect-freehand.js';
 import { pageViewport } from './trim.js';
 
 export const PAPER_STYLES = [
-  { id: 'plain', name: 'Plain' },
-  { id: 'ruled', name: 'Ruled' },
+  { id: 'plain', name: 'Blank' },
+  { id: 'ruled', name: 'Lined' },
   { id: 'grid', name: 'Grid' },
-  { id: 'dotted', name: 'Dotted' },
+  { id: 'dotted', name: 'Dot grid' },
+  { id: 'planner', name: 'Planner' },
 ];
+// A page may carry its own template (page.tpl); otherwise it uses the note's paper style. Background only.
+export const pageStyle = (paper, page) => (page && page.tpl) || (paper && paper.style) || 'plain';
+export const pagePaper = (paper, page) => ({ ...(paper || { color: '#ffffff' }), style: pageStyle(paper, page) });
 export const PAPER_COLORS = [
   { name: 'White', c: '#ffffff' },
   { name: 'Ivory', c: '#fbf7ec' },
@@ -119,6 +123,23 @@ export function paperGeometry(style, w, h, color) {
   } else if (style === 'dotted') {
     const s = 18, ox = (w % s) / 2 + s / 2, oy = (h % s) / 2 + s / 2;
     for (let y = oy; y < h; y += s) for (let x = ox; x < w; x += s) g.dots.push([x, y]);
+  } else if (style === 'planner') {
+    // simple daily planner: date line at the top, hours on the left (time gutter), to-do boxes + notes on the right
+    const m = 28, top = 64, split = Math.round(w * 0.6), bottom = h - m;
+    g.lines.push([m, top, w - m, top]);                  // under the date
+    g.lines.push([split, top, split, bottom]);           // column divider
+    g.lines.push([m + 34, top, m + 34, bottom]);         // time gutter
+    const rows = 15, rh = (bottom - top) / rows;
+    for (let i = 1; i <= rows; i++) g.lines.push([m, top + i * rh, split, top + i * rh]);
+    const tx = split + 14, bx = 11;
+    for (let i = 0; i < 10; i++) {
+      const y = top + 22 + i * 28;
+      g.lines.push([tx, y, tx + bx, y], [tx + bx, y, tx + bx, y + bx], [tx + bx, y + bx, tx, y + bx], [tx, y + bx, tx, y]);
+      g.lines.push([tx + bx + 8, y + bx, w - m, y + bx]);
+    }
+    const ny = top + 22 + 10 * 28 + 30;
+    g.lines.push([split, ny, w - m, ny]);                // notes area below
+    for (let y = ny + 26; y < bottom - 4; y += 26) g.lines.push([tx, y, w - m, y]);
   }
   return g;
 }
@@ -288,7 +309,7 @@ export async function renderPageInto(canvas, page, paper, pdfDoc, pxPerUnit, ass
     } catch (e) { console.warn('thumb render', e); }
   } else {
     ctx.setTransform(pxPerUnit, 0, 0, pxPerUnit, 0, 0);
-    drawPaper(ctx, page.w, page.h, paper, pxPerUnit);
+    drawPaper(ctx, page.w, page.h, pagePaper(paper, page), pxPerUnit);
   }
   ctx.setTransform(pxPerUnit, 0, 0, pxPerUnit, 0, 0);
   if (page.images && page.images.length) await drawImages(ctx, page, assets);

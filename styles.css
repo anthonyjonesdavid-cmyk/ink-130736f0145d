@@ -1,4 +1,4 @@
-:root { --css-build: '2026.10.10l';
+:root { --css-build: '2026.10.29a';
   --bg: #111113;
   --panel: #1c1c1e;
   --side: #18181b;
@@ -671,3 +671,14 @@ body.privacy #privacyCover { display: grid; }
 /* shape snapping cue: the live stroke briefly fades in as the clean shape */
 .layer.live.snap-cue { animation: snapCue .22s ease-out; }
 @keyframes snapCue { from { opacity: .3; } to { opacity: 1; } }
+
+/* templates (2026.10.29) */
+.paper-styles { grid-template-columns: repeat(5, 1fr); }
+.paper-style { min-height: 44px; padding: 4px 0; }
+.tpl-modal { max-width: 560px; }
+.tpl-modal .paper-styles { margin: 4px 0 6px; }
+@media (max-width: 520px) { .paper-styles { grid-template-columns: repeat(3, 1fr); } .paper-style canvas { width: 64px; height: 80px; } }
+.tpl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.tpl-scope { display: inline-flex; background: rgba(127,127,127,.18); border-radius: 10px; padding: 2px; text-transform: none; letter-spacing: 0; }
+.tpl-scope button { min-height: 40px; padding: 0 14px; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--ink2); }
+.tpl-scope button.on { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.12); }

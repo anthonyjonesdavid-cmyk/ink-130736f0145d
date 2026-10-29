@@ -13,7 +13,7 @@ import { pickCreated, parsePdfDate, m4aCreated, dateFromName } from './dates.js'
 import * as backup from './backup.js';
 import { initDrive, startDriveImport, preload as preloadDrive, importRemote as driveImportRemote, _test as driveTest, checkInbox, importInbox, markInboxImported, inboxState, inboxUrl, inboxHasToken } from './drive.js';
 import {
-  renderPageInto, PAPER_STYLES, PAPER_COLORS, PEN_COLORS, PEN_SIZES, HL_COLORS, HL_SIZES, ERASER_SIZES, drawPaper, isDark, hexToRgb, loadGrain, presetFor,
+  renderPageInto, pageStyle, PAPER_STYLES, PAPER_COLORS, PEN_COLORS, PEN_SIZES, HL_COLORS, HL_SIZES, ERASER_SIZES, drawPaper, isDark, hexToRgb, loadGrain, presetFor,
 } from './render.js';
 
 /* ---------------- settings ---------------- */
@@ -806,7 +806,54 @@ $('#folderMenuBtn').addEventListener('click', (e) => {
 
 /* ---------------- create / import ---------------- */
 $('#newNoteBtn').addEventListener('click', () => newNote());
+// Template thumbnails (Blank, Lined, Grid, Dot grid, Planner) drawn in a given paper colour.
+function tplButtons(sel, color, grain) {
+  return `<div class="paper-styles tpl-grid">${PAPER_STYLES.map((s) => `<button type="button" class="paper-style ${sel === s.id ? 'on' : ''}" data-tpl="${s.id}"><canvas width="96" height="120"></canvas><span>${s.name}</span></button>`).join('')}</div>`;
+}
+function drawTplPreviews(root, color, grain) {
+  $$('[data-tpl] canvas', root).forEach((c) => {
+    const ctx = c.getContext('2d'); const s = 96 / 612 * 2.2;
+    ctx.setTransform(s, 0, 0, s, 0, 0); ctx.clearRect(0, 0, 612, 792);
+    drawPaper(ctx, 612 / 2.2, 792 / 2.2, { style: c.parentElement.dataset.tpl, color, grain: !!grain }, s);
+  });
+}
+// New Note: pick a template first (last choice preselected and remembered)
 async function newNote() {
+  const sel = settings.paper.style || 'ruled';
+  const body = h(`<div>${tplButtons(sel)}</div>`);
+  const picked = await modal({
+    title: 'New note', cls: 'tpl-modal', body,
+    actions: [{ label: 'Cancel', value: null }],
+    onOpen: (w, close) => {
+      drawTplPreviews(w, settings.paper.color, settings.paper.grain);
+      w.addEventListener('click', (ev) => { const b = ev.target.closest('[data-tpl]'); if (b) close(b.dataset.tpl); });
+    },
+  });
+  if (!picked) return;
+  settings.paper = { ...settings.paper, style: picked }; saveSettings();
+  await new Promise((r) => setTimeout(r, 200)); // let the picker fade out (the toolbar failsafe checks what covers the bar)
+  return createNote();
+}
+// Add page: pick its template (remembered); ink is never touched, the template is only the page background
+function addPageWithTpl(anchor, after) {
+  if (!current) return;
+  const paper = current.meta.paper;
+  const sel = settings.pageTpl || pageStyle(paper, current.body.pages[after ?? editor.currentIndex ?? 0]);
+  const pop = h(`<div class="paper-pop"><div class="pop-title">Add page</div>${tplButtons(sel)}</div>`);
+  pop.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-tpl]'); if (!b) return;
+    closePopover();
+    settings.pageTpl = b.dataset.tpl; saveSettings();
+    editor.nextTpl = b.dataset.tpl;
+    let i;
+    try { i = after == null ? editor.addPage() : editor.addPage(after); } finally { editor.nextTpl = null; }
+    refreshThumbs();
+    if (after != null) jumpTo(i); else toast('Page added');
+  });
+  popover(anchor, pop, { width: Math.min(520, window.innerWidth - 20) });
+  drawTplPreviews(pop, paper.color, paper.grain);
+}
+async function createNote() {
   const now = Date.now();
   const doc = {
     id: store.uid(), folderId: section,
@@ -1126,7 +1173,7 @@ function setOptsCollapsed(on, { keepPlace = true, remember = true } = {}) {
 }
 // failsafe: if the toolbar isn't actually visible (stale stylesheet, odd safe-area), reload the stylesheet past every
 // cache and always offer the restore button
-const CSS_BUILD = '2026.10.10l';
+const CSS_BUILD = '2026.10.29a';
 function cssFresh() { return getComputedStyle(document.documentElement).getPropertyValue('--css-build').replace(/["'\s]/g, '') === CSS_BUILD; }
 function reloadCss() {
   const l = $('#mainCss'); if (!l || l.dataset.busted) return;
@@ -1395,7 +1442,7 @@ $('#zoomAdjustBtn').addEventListener('click', (e) => {
     toast(settings.pinchZoom ? 'Pinch zoom on' : 'Pinch zoom off — page stays at the zoom you set');
   });
 });
-$('#addPageBtn').addEventListener('click', () => { editor.addPage(); refreshThumbs(); toast('Page added'); });
+$('#addPageBtn').addEventListener('click', (e) => addPageWithTpl(e.currentTarget));
 async function renameCurrent() {
   const t = await promptText('Rename note', current.meta.title);
   if (t) { current.meta.title = t; updateChrome(); dirty = true; flushSave(); }
@@ -1417,9 +1464,14 @@ document.addEventListener('keydown', (e) => {
 /* ---------------- paper picker ---------------- */
 $('#paperBtn').addEventListener('click', (e) => {
   const paper = current.meta.paper;
+  const ci = Math.max(0, Math.min(current.body.pages.length - 1, editor.currentIndex ?? 0));
+  const curPg = current.body.pages[ci];
+  let scope = curPg && curPg.tpl ? 'page' : 'all';
+  const canPage = curPg && curPg.kind !== 'pdf';
+  const shown = () => (scope === 'page' ? pageStyle(current.meta.paper, current.body.pages[ci]) : current.meta.paper.style);
   const pop = h(`<div class="paper-pop">
-    <div class="pop-title">Page style</div>
-    <div class="paper-styles">${PAPER_STYLES.map((s) => `<button class="paper-style ${paper.style === s.id ? 'on' : ''}" data-style="${s.id}"><canvas width="96" height="120"></canvas><span>${s.name}</span></button>`).join('')}</div>
+    <div class="pop-title tpl-head">Template${canPage ? `<span class="tpl-scope"><button type="button" data-scope="page" class="${scope === 'page' ? 'on' : ''}">This page</button><button type="button" data-scope="all" class="${scope === 'all' ? 'on' : ''}">All pages</button></span>` : ''}</div>
+    <div class="paper-styles">${PAPER_STYLES.map((s) => `<button class="paper-style ${shown() === s.id ? 'on' : ''}" data-style="${s.id}"><canvas width="96" height="120"></canvas><span>${s.name}</span></button>`).join('')}</div>
     <div class="pop-title">Page colour</div>
     <div class="paper-colors">${PAPER_COLORS.map((c) => `<button class="pcolor ${paper.color === c.c ? 'on' : ''}" data-color="${c.c}" style="--c:${c.c}" title="${c.name}" aria-label="${c.name}"></button>`).join('')}
       <label class="pcolor custom ${PAPER_COLORS.some((c) => c.c === paper.color) ? '' : 'on'}" title="Custom" style="--c:${paper.color}"><input type="color" value="${paper.color}"></label></div>
@@ -1433,15 +1485,21 @@ $('#paperBtn').addEventListener('click', (e) => {
     drawPaper(ctx, 612 / 2.2, 792 / 2.2, { style: PAPER_STYLES[i].id, color: current.meta.paper.color, grain: !!current.meta.paper.grain }, s);
   });
   const apply = (p) => {
-    editor.setPaper(p); settings.paper = { ...p }; saveSettings();
-    $$('.paper-style', pop).forEach((b) => b.classList.toggle('on', b.dataset.style === p.style));
+    editor.setPaper(p, { clearTpl: p.style !== current.meta.paper.style }); settings.paper = { ...p }; saveSettings();
+    markStyle();
     $$('.pcolor[data-color]', pop).forEach((b) => b.classList.toggle('on', b.dataset.color === p.color));
     $('#grainToggle', pop).checked = !!p.grain;
     drawPrev();
   };
+  const markStyle = () => $$('.paper-style', pop).forEach((b) => b.classList.toggle('on', b.dataset.style === shown()));
   pop.addEventListener('click', (ev) => {
-    const s = ev.target.closest('[data-style]'), c = ev.target.closest('[data-color]');
-    if (s) apply({ ...current.meta.paper, style: s.dataset.style });
+    const s = ev.target.closest('[data-style]'), c = ev.target.closest('[data-color]'), sc = ev.target.closest('[data-scope]');
+    if (sc) { scope = sc.dataset.scope; $$('[data-scope]', pop).forEach((b) => b.classList.toggle('on', b === sc)); markStyle(); return; }
+    if (s && scope === 'page') {
+      const v = s.dataset.style === current.meta.paper.style ? null : s.dataset.style;
+      editor.setPageTpl(ci, v); settings.pageTpl = s.dataset.style; saveSettings(); markStyle(); return;
+    }
+    if (s) { apply({ ...current.meta.paper, style: s.dataset.style }); return; }
     // presets that come with grain (Sage) switch it on; other colours keep the current grain setting
     if (c) apply({ ...current.meta.paper, color: c.dataset.color, ...(presetFor(c.dataset.color)?.grain ? { grain: true } : {}) });
   });
@@ -1449,7 +1507,7 @@ $('#paperBtn').addEventListener('click', (e) => {
     if (ev.target.type === 'color') apply({ ...current.meta.paper, color: ev.target.value });
     if (ev.target.id === 'grainToggle') apply({ ...current.meta.paper, grain: ev.target.checked });
   });
-  popover(e.currentTarget, pop, { width: 520 });
+  popover(e.currentTarget, pop, { width: Math.min(520, window.innerWidth - 20) });
   drawPrev();
 });
 
@@ -1470,7 +1528,7 @@ $('#pagesBtn').addEventListener('click', () => setPagesOpen(!pagesOpen()));
 let thumbTimer;
 function scheduleThumbRefresh() { clearTimeout(thumbTimer); thumbTimer = setTimeout(() => refreshThumbs(), 600); }
 function thumbVersion(p) {
-  return p.id + ':' + p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + current.meta.paper.style + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + ':' + p.w + 'x' + p.h + ':' + JSON.stringify(p.trim || null);
+  return p.id + ':' + p.strokes.length + ':' + (p.images || []).length + ':' + editor.rev(p) + ':' + pageStyle(current.meta.paper, p) + current.meta.paper.color + (current.meta.paper.grain ? 'g' : '') + ':' + p.w + 'x' + p.h + ':' + JSON.stringify(p.trim || null);
 }
 let thumbOrder = '';
 async function refreshThumbs(full = false) {
@@ -1595,7 +1653,7 @@ addEventListener('pointercancel', (e) => endPress(e, true));
 $('#thumbs').addEventListener('contextmenu', (e) => e.preventDefault());
 $('#thumbs').addEventListener('click', (e) => {
   if (e.target.closest('#thumbsClose')) return setPagesOpen(false);
-  if (e.target.closest('#thumbAdd')) { const i = editor.addPage(current.body.pages.length - 1); refreshThumbs(); jumpTo(i); }
+  if (e.target.closest('#thumbAdd')) return addPageWithTpl(e.target.closest('#thumbAdd'), current.body.pages.length - 1);
 });
 // finger swipe in from the left edge opens the panel (Pencil is ignored; the edge strip is kept away from drawing)
 (() => {
@@ -1712,8 +1770,13 @@ async function requestPersist() {
 window.addEventListener('pointerdown', requestPersist, { once: true });
 
 // in-app change log (full history in CHANGELOG.md)
-const APP_VERSION = '2026.10.10l';
+const APP_VERSION = '2026.10.29a';
 const CHANGES = [
+  ['2026.10.29a', [
+    'Page templates: New Note asks for Blank, Lined, Grid, Dot grid or Planner (a simple daily planner) and remembers your last choice.',
+    'Add page lets you pick the template for the new page. In the paper menu, choose This page or All pages to change a template later.',
+    'Templates are only the page background: your ink, photos and PDFs are never changed. Undo works.',
+  ]],
   ['2026.10.10l', [
     'Straight lines snap reliably on iPad: draw a line, keep the Pencil down for about half a second, and it becomes a perfectly straight line from where you started to where you stopped.',
     'Small hand tremor while holding no longer stops the snap or wiggles the line; keep holding and move to drag the end point.',

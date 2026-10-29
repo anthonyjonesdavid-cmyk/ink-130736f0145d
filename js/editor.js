@@ -1,6 +1,6 @@
 // The note editor: scrolling page column, Apple Pencil drawing, palm rejection, pinch zoom, undo/redo.
 import {
-  drawPaper, drawStroke, drawStrokes, strokePath2D, strokeOutline, outlineToPath, strokeHit, strokeBounds, hlBlend, hlAlpha, loadImage,
+  drawPaper, pagePaper, drawStroke, drawStrokes, strokePath2D, strokeOutline, outlineToPath, strokeHit, strokeBounds, hlBlend, hlAlpha, loadImage,
 } from './render.js';
 import { uid } from './store.js';
 import * as Shapes from './shapes.js';
@@ -137,7 +137,7 @@ export class Editor {
       bg.width = W; bg.height = H;
       const ctx = bg.getContext('2d');
       ctx.setTransform(k, 0, 0, k, 0, 0);
-      drawPaper(ctx, p.w, p.h, this.doc.meta.paper, k);
+      drawPaper(ctx, p.w, p.h, pagePaper(this.doc.meta.paper, p), k);
       el.classList.add('ready');
     }
     this.renderImages(el);
@@ -946,7 +946,7 @@ export class Editor {
   addPage(afterIndex = this.currentIndex ?? this.pageEls.length - 1, { scroll = true } = {}) {
     const pages = this.doc.body.pages;
     const ref = pages[afterIndex] || pages[pages.length - 1];
-    const page = { id: uid(), kind: 'paper', w: ref ? ref.w : 612, h: ref ? ref.h : 792, strokes: [] };
+    const page = { id: uid(), kind: 'paper', w: ref ? ref.w : 612, h: ref ? ref.h : 792, strokes: [], ...(this.nextTpl ? { tpl: this.nextTpl } : ref && ref.tpl ? { tpl: ref.tpl } : {}) };
     const index = afterIndex + 1;
     this.insertPage(index, page);
     this.push({ t: 'addPage', index, page });
@@ -1019,16 +1019,28 @@ export class Editor {
   insertBlank(index) {
     const pages = this.doc.body.pages;
     const ref = pages[Math.min(index, pages.length - 1)] || pages[index - 1];
-    const page = { id: uid(), kind: 'paper', w: ref ? ref.w : 612, h: ref ? ref.h : 792, strokes: [] };
+    const page = { id: uid(), kind: 'paper', w: ref ? ref.w : 612, h: ref ? ref.h : 792, strokes: [], ...(this.nextTpl ? { tpl: this.nextTpl } : ref && ref.tpl ? { tpl: ref.tpl } : {}) };
     this.insertPage(index, page);
     this.push({ t: 'addPage', index, page });
     return index;
   }
 
-  setPaper(paper) {
+  // template for one page (background only; ink untouched). null = follow the note's style.
+  setPageTpl(index, tpl) {
+    const page = this.doc.body.pages[index]; if (!page || page.kind === 'pdf') return false;
+    const from = page.tpl || null, to = tpl || null;
+    if (from === to) return false;
+    if (to) page.tpl = to; else delete page.tpl;
+    this.push({ t: 'pageTpl', pageId: page.id, from, to });
+    this.rerenderAll();
+    return true;
+  }
+  setPaper(paper, { clearTpl = false } = {}) {
     const from = { ...this.doc.meta.paper };
+    const tpls = clearTpl ? this.doc.body.pages.filter((pg) => pg.tpl).map((pg) => [pg, pg.tpl]) : [];
+    for (const [pg] of tpls) delete pg.tpl;
     this.doc.meta.paper = { ...paper };
-    this.push({ t: 'paper', from, to: { ...paper } });
+    this.push({ t: 'paper', from, to: { ...paper }, tpls });
     this.rerenderAll();
   }
 
@@ -1071,8 +1083,15 @@ export class Editor {
       case 'movePage':
         if (undo) this.applyMove(a.to, a.from); else this.applyMove(a.from, a.to);
         break;
+      case 'pageTpl': {
+        const pg = el && el._page; if (!pg) break;
+        const v = undo ? a.from : a.to;
+        if (v) pg.tpl = v; else delete pg.tpl;
+        this.rerenderAll(); break;
+      }
       case 'paper':
         this.doc.meta.paper = { ...(undo ? a.from : a.to) };
+        for (const [pg, v] of a.tpls || []) { if (undo) pg.tpl = v; else delete pg.tpl; }
         this.rerenderAll(); break;
       case 'addItems':
         if (undo) {
